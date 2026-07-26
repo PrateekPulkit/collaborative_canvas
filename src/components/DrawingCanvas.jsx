@@ -34,6 +34,19 @@ function hexToRgba(hex, alpha = 0.15) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+// Utility to parse out the clean room ID even if a full URL is pasted
+const sanitizeRoomInput = (input) => {
+  if (!input) return '';
+  try {
+    const url = new URL(input);
+    const nestedRoom = url.searchParams.get('room');
+    return nestedRoom || input;
+  } catch (e) {
+    const match = input.match(/[?&]room=([^&]+)/);
+    return match ? match[1] : input;
+  }
+};
+
 export default function DrawingCanvas() {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -65,8 +78,6 @@ export default function DrawingCanvas() {
     collaborators,
     myUsername,
     myColor,
-    simulationActive,
-    setSimulationActive,
     sendElementAdded,
     sendElementUpdated,
     sendElementDeleted,
@@ -771,7 +782,9 @@ export default function DrawingCanvas() {
 
   // Copy shareable invitation URL link to clipboard
   const handleCopyInviteLink = () => {
-    navigator.clipboard.writeText(window.location.href);
+    // Generate clean link using URL query params
+    const inviteUrl = `${window.location.protocol}//${window.location.host}${window.location.pathname}?room=${roomId}`;
+    navigator.clipboard.writeText(inviteUrl);
     setCopyFeedback(true);
     setTimeout(() => setCopyFeedback(false), 2000);
   };
@@ -779,7 +792,8 @@ export default function DrawingCanvas() {
   // Handle entering custom Room ID to redirect/join
   const handleJoinRoom = (e) => {
     if (e.key === 'Enter' && joinInput.trim()) {
-      window.location.search = `?room=${joinInput.trim()}`;
+      const cleanId = sanitizeRoomInput(joinInput.trim());
+      window.location.search = `?room=${cleanId}`;
     }
   };
 
@@ -963,7 +977,7 @@ export default function DrawingCanvas() {
               borderRadius: '12px',
               gap: '8px'
             }}>
-              <span style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.5)' }}>Room:</span>
+              <span style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.5)' }}>Room Code:</span>
               <span style={{ fontSize: '12px', color: '#fff', fontWeight: 'bold', letterSpacing: '0.5px' }}>{roomId}</span>
               <button
                 onClick={handleCopyInviteLink}
@@ -997,19 +1011,24 @@ export default function DrawingCanvas() {
                 value={joinInput}
                 onChange={(e) => setJoinInput(e.target.value)}
                 onKeyDown={handleJoinRoom}
-                placeholder="Join Room Code..."
+                placeholder="Join Room ID..."
                 style={{
                   background: 'transparent',
                   border: 'none',
                   color: '#fff',
                   fontSize: '12px',
                   outline: 'none',
-                  width: '100px',
+                  width: '120px',
                   fontFamily: 'inherit'
                 }}
               />
               <button
-                onClick={() => joinInput.trim() && (window.location.search = `?room=${joinInput.trim()}`)}
+                onClick={() => {
+                  if (joinInput.trim()) {
+                    const cleanId = sanitizeRoomInput(joinInput.trim());
+                    window.location.search = `?room=${cleanId}`;
+                  }
+                }}
                 style={{
                   background: 'transparent',
                   border: 'none',
@@ -1021,35 +1040,6 @@ export default function DrawingCanvas() {
                 }}
               >
                 <ChevronRight size={14} />
-              </button>
-            </div>
-
-            {/* Simulated user controls */}
-            <div className="glass-panel" style={{
-              display: 'flex',
-              alignItems: 'center',
-              padding: '6px 12px',
-              borderRadius: '12px',
-              gap: '6px'
-            }}>
-              <button 
-                onClick={() => setSimulationActive(!simulationActive)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  background: 'transparent',
-                  border: 'none',
-                  color: simulationActive ? '#a855f7' : 'rgba(255, 255, 255, 0.5)',
-                  cursor: 'pointer',
-                  fontSize: '11px',
-                  fontWeight: 600,
-                  textTransform: 'uppercase'
-                }}
-                title={simulationActive ? "Turn Off Simulated Users" : "Turn On Simulated Users"}
-              >
-                <Users size={14} />
-                <span>Sim: {simulationActive ? 'On' : 'Off'}</span>
               </button>
             </div>
 

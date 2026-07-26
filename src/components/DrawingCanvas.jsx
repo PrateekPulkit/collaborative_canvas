@@ -6,6 +6,7 @@ import {
   ArrowUpRight, 
   Square, 
   Circle as CircleIcon, 
+  Type,
   Eraser, 
   Undo2, 
   Redo2, 
@@ -13,9 +14,11 @@ import {
   Grid, 
   Sparkles,
   Maximize2,
-  PaintBucket
+  PaintBucket,
+  Trash2
 } from 'lucide-react';
 import { screenToCanvas, calculateZoomPan } from '../utils/canvasMath';
+import { isPointOnElement, getHitResizeHandle, getElementBoundingBox } from '../utils/hitTest';
 
 // Helper to convert hex to semi-transparent RGBA for shape fills
 function hexToRgba(hex, alpha = 0.15) {
@@ -33,24 +36,45 @@ export default function DrawingCanvas() {
   // Viewport state
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [activeTool, setActiveTool] = useState('pen'); // 'select' | 'pen' | 'line' | 'arrow' | 'rect' | 'circle'
+  const [activeTool, setActiveTool] = useState('pen'); // 'select' | 'pen' | 'line' | 'arrow' | 'rect' | 'circle' | 'text'
   const [showGrid, setShowGrid] = useState(true);
   
   // Element states
   const [elements, setElements] = useState([]);
   const [currentElement, setCurrentElement] = useState(null);
+  const [selectedElementId, setSelectedElementId] = useState(null);
+  const [editingText, setEditingText] = useState(null); // { id, x, y, text }
   
   // Interaction states
   const [isDrawing, setIsDrawing] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
+  const [isMoving, setIsMoving] = useState(false);
+  const [activeResizeHandle, setActiveResizeHandle] = useState(null);
+  
   const panStart = useRef({ x: 0, y: 0 });
   const dragStart = useRef({ x: 0, y: 0 });
+  const resizeStartBbox = useRef(null);
   
   // Custom styles state
   const [strokeColor, setStrokeColor] = useState('#a855f7'); // Neon purple
   const [strokeWidth, setStrokeWidth] = useState(3);
   const [fillEnabled, setFillEnabled] = useState(true);
   
+  // Handle keyboard deletes
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (editingText) return; // Ignore hotkeys during text editing
+      
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedElementId) {
+        setElements(prev => prev.filter(el => el.id !== selectedElementId));
+        setSelectedElementId(null);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedElementId, editingText]);
+
   // Handle canvas sizing
   useEffect(() => {
     const handleResize = () => {
@@ -66,12 +90,12 @@ export default function DrawingCanvas() {
     handleResize(); // Initial call
     
     return () => window.removeEventListener('resize', handleResize);
-  }, [elements, currentElement, zoom, pan, showGrid]);
+  }, [elements, currentElement, zoom, pan, showGrid, selectedElementId, editingText]);
   
   // Redraw canvas whenever elements or viewport state changes
   useEffect(() => {
     draw();
-  }, [elements, currentElement, zoom, pan, showGrid]);
+  }, [elements, currentElement, zoom, pan, showGrid, selectedElementId, editingText]);
   
   // Main draw loop
   const draw = () => {
@@ -95,12 +119,22 @@ export default function DrawingCanvas() {
     
     // Draw completed elements
     elements.forEach(element => {
+      // Don't draw text on canvas while editing it in textarea
+      if (editingText && editingText.id === element.id) return;
       drawElement(ctx, element);
     });
     
     // Draw current active drawing element
     if (currentElement) {
       drawElement(ctx, currentElement);
+    }
+    
+    // Draw selection outline & handles
+    if (selectedElementId && !editingText) {
+      const selectedEl = elements.find(el => el.id === selectedElementId);
+      if (selectedEl) {
+        drawSelectedOutline(ctx, selectedEl);
+      }
     }
     
     ctx.restore();
@@ -125,7 +159,6 @@ export default function DrawingCanvas() {
     for (let x = startX; x <= endX; x += gridSize) {
       for (let y = startY; y <= endY; y += gridSize) {
         ctx.beginPath();
-        // Dot size scales with zoom to maintain readable thickness
         const dotRadius = Math.max(0.5, 1.2 / zoom);
         ctx.arc(x, y, dotRadius, 0, 2 * Math.PI);
         ctx.fill();
@@ -163,7 +196,6 @@ export default function DrawingCanvas() {
           } else {
             ctx.beginPath();
             ctx.moveTo(pts[0].x, pts[0].y);
-            // Quadratic curve interpolation for smooth freehand drawing
             for (let i = 1; i < pts.length - 1; i++) {
               const xc = (pts[i].x + pts[i + 1].x) / 2;
               const yc = (pts[i].y + pts[i + 1].y) / 2;
@@ -190,12 +222,10 @@ export default function DrawingCanvas() {
         ctx.lineTo(endX, endY);
         ctx.stroke();
         
-        // Draw Arrowhead
         const angle = Math.atan2(element.height, element.width);
         const arrowLength = Math.max(12, element.strokeWidth * 3.5);
-        const arrowAngle = Math.PI / 6; // 30 degrees
+        const arrowAngle = Math.PI / 6;
         
-        // Solid arrowhead drawing (removes dashes for head)
         ctx.setLineDash([]);
         ctx.beginPath();
         ctx.moveTo(endX, endY);
@@ -236,6 +266,20 @@ export default function DrawingCanvas() {
         ctx.stroke();
         break;
 
+      case 'text':
+        if (element.text) {
+          ctx.fillStyle = element.strokeColor;
+          const fontSize = element.strokeWidth * 4 + 12;
+          ctx.font = `${fontSize}px Outfit, sans-serif`;
+          ctx.textBaseline = 'top';
+          
+          const lines = element.text.split('\n');
+          lines.forEach((line, idx) => {
+            ctx.fillText(line, element.x, element.y + idx * (fontSize * 1.25));
+          });
+        }
+        break;
+
       default:
         break;
     }
@@ -243,16 +287,58 @@ export default function DrawingCanvas() {
     ctx.restore();
   };
   
+  // Render Selection outline & handle points
+  const drawSelectedOutline = (ctx, element) => {
+    const bbox = getElementBoundingBox(element);
+    
+    ctx.save();
+    ctx.strokeStyle = '#a855f7';
+    ctx.lineWidth = 1.5 / zoom;
+    ctx.setLineDash([6 / zoom, 4 / zoom]);
+    
+    // Outer bounding rect
+    ctx.beginPath();
+    ctx.rect(bbox.x - 4 / zoom, bbox.y - 4 / zoom, bbox.width + 8 / zoom, bbox.height + 8 / zoom);
+    ctx.stroke();
+    
+    // Draw Resizing handle dots
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#a855f7';
+    ctx.lineWidth = 1.5 / zoom;
+    ctx.setLineDash([]);
+    
+    const handleSize = 7 / zoom;
+    const positions = [
+      { x: bbox.x, y: bbox.y }, // NW
+      { x: bbox.x + bbox.width, y: bbox.y }, // NE
+      { x: bbox.x + bbox.width, y: bbox.y + bbox.height }, // SE
+      { x: bbox.x, y: bbox.y + bbox.height } // SW
+    ];
+    
+    positions.forEach(pos => {
+      ctx.beginPath();
+      ctx.rect(pos.x - handleSize / 2, pos.y - handleSize / 2, handleSize, handleSize);
+      ctx.fill();
+      ctx.stroke();
+    });
+    
+    ctx.restore();
+  };
+
+  // Helper to update elements by ID
+  const updateElement = (id, updates) => {
+    setElements(prev => prev.map(el => el.id === id ? { ...el, ...updates } : el));
+  };
+  
   // Mouse / Touch Event Handlers
   const handleMouseDown = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     
-    // Check if middle click or Shift key is pressed (for Panning)
     const isMiddleClick = e.button === 1;
     const isSpaceOrShift = e.shiftKey;
     
-    if (isMiddleClick || isSpaceOrShift || activeTool === 'select') {
+    if (isMiddleClick || isSpaceOrShift) {
       setIsPanning(true);
       panStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
       return;
@@ -260,6 +346,35 @@ export default function DrawingCanvas() {
     
     const coords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
     dragStart.current = coords;
+    
+    if (activeTool === 'select') {
+      // 1. Check if clicked a resize handle of the currently selected element
+      if (selectedElementId) {
+        const selectedEl = elements.find(el => el.id === selectedElementId);
+        if (selectedEl) {
+          const handle = getHitResizeHandle(coords.x, coords.y, selectedEl, zoom);
+          if (handle) {
+            setActiveResizeHandle(handle);
+            resizeStartBbox.current = getElementBoundingBox(selectedEl);
+            return;
+          }
+        }
+      }
+      
+      // 2. Otherwise do hit testing on elements to select or move
+      const clickedElement = [...elements]
+        .reverse()
+        .find(el => isPointOnElement(coords.x, coords.y, el));
+        
+      if (clickedElement) {
+        setSelectedElementId(clickedElement.id);
+        setIsMoving(true);
+      } else {
+        setSelectedElementId(null);
+      }
+      return;
+    }
+    
     setIsDrawing(true);
     
     if (activeTool === 'pen') {
@@ -270,6 +385,22 @@ export default function DrawingCanvas() {
         strokeColor,
         strokeWidth
       });
+    } else if (activeTool === 'text') {
+      // Create new text element and trigger input overlay
+      const textId = `text-${Date.now()}`;
+      const newText = {
+        id: textId,
+        type: 'text',
+        x: coords.x,
+        y: coords.y,
+        text: '',
+        strokeColor,
+        strokeWidth
+      };
+      setElements(prev => [...prev, newText]);
+      setEditingText(newText);
+      setSelectedElementId(textId);
+      setIsDrawing(false);
     } else if (['line', 'arrow', 'rect', 'circle'].includes(activeTool)) {
       setCurrentElement({
         id: `${activeTool}-${Date.now()}`,
@@ -290,6 +421,8 @@ export default function DrawingCanvas() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     
+    const coords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
+    
     if (isPanning) {
       setPan({
         x: e.clientX - panStart.current.x,
@@ -298,10 +431,114 @@ export default function DrawingCanvas() {
       return;
     }
     
+    // Handle resizing element
+    if (activeResizeHandle && selectedElementId) {
+      const element = elements.find(el => el.id === selectedElementId);
+      if (!element) return;
+      
+      const bbox = resizeStartBbox.current;
+      if (!bbox) return;
+      
+      let newX = element.x;
+      let newY = element.y;
+      let newWidth = element.width;
+      let newHeight = element.height;
+      
+      if (element.type === 'pen') {
+        // Drag resizing freehand paths is done by mapping coordinates
+        let scaleX = 1;
+        let scaleY = 1;
+        
+        if (activeResizeHandle === 'se') {
+          scaleX = Math.max(0.1, (coords.x - bbox.x) / bbox.width);
+          scaleY = Math.max(0.1, (coords.y - bbox.y) / bbox.height);
+        } else if (activeResizeHandle === 'nw') {
+          const endX = bbox.x + bbox.width;
+          const endY = bbox.y + bbox.height;
+          scaleX = Math.max(0.1, (endX - coords.x) / bbox.width);
+          scaleY = Math.max(0.1, (endY - coords.y) / bbox.height);
+        } else if (activeResizeHandle === 'ne') {
+          const endY = bbox.y + bbox.height;
+          scaleX = Math.max(0.1, (coords.x - bbox.x) / bbox.width);
+          scaleY = Math.max(0.1, (endY - coords.y) / bbox.height);
+        } else if (activeResizeHandle === 'sw') {
+          const endX = bbox.x + bbox.width;
+          scaleX = Math.max(0.1, (endX - coords.x) / bbox.width);
+          scaleY = Math.max(0.1, (coords.y - bbox.y) / bbox.height);
+        }
+        
+        // Target base anchor point depending on corner
+        const anchorX = ['nw', 'sw'].includes(activeResizeHandle) ? bbox.x + bbox.width : bbox.x;
+        const anchorY = ['nw', 'ne'].includes(activeResizeHandle) ? bbox.y + bbox.height : bbox.y;
+        
+        const scaledPoints = element.points.map(p => ({
+          x: anchorX + (p.x - anchorX) * scaleX,
+          y: anchorY + (p.y - anchorY) * scaleY
+        }));
+        
+        updateElement(selectedElementId, { points: scaledPoints });
+        return;
+      }
+
+      // Geometric resizing formulas
+      if (activeResizeHandle === 'se') {
+        newWidth = coords.x - bbox.x;
+        newHeight = coords.y - bbox.y;
+      } else if (activeResizeHandle === 'nw') {
+        const endX = bbox.x + bbox.width;
+        const endY = bbox.y + bbox.height;
+        newX = coords.x;
+        newY = coords.y;
+        newWidth = endX - coords.x;
+        newHeight = endY - coords.y;
+      } else if (activeResizeHandle === 'ne') {
+        const endY = bbox.y + bbox.height;
+        newY = coords.y;
+        newWidth = coords.x - bbox.x;
+        newHeight = endY - coords.y;
+      } else if (activeResizeHandle === 'sw') {
+        const endX = bbox.x + bbox.width;
+        newX = coords.x;
+        newWidth = endX - coords.x;
+        newHeight = coords.y - bbox.y;
+      }
+      
+      updateElement(selectedElementId, {
+        x: newX,
+        y: newY,
+        width: newWidth,
+        height: newHeight
+      });
+      return;
+    }
+    
+    // Handle moving element
+    if (isMoving && selectedElementId) {
+      const element = elements.find(el => el.id === selectedElementId);
+      if (!element) return;
+      
+      const dx = coords.x - dragStart.current.x;
+      const dy = coords.y - dragStart.current.y;
+      dragStart.current = coords;
+      
+      if (element.type === 'pen') {
+        const shiftedPoints = element.points.map(p => ({
+          x: p.x + dx,
+          y: p.y + dy
+        }));
+        updateElement(selectedElementId, { points: shiftedPoints });
+      } else {
+        updateElement(selectedElementId, {
+          x: element.x + dx,
+          y: element.y + dy
+        });
+      }
+      return;
+    }
+    
     if (!isDrawing || !currentElement) return;
     
-    const coords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
-    
+    // Handle drawing in progress
     if (activeTool === 'pen') {
       setCurrentElement(prev => {
         if (!prev) return null;
@@ -328,6 +565,17 @@ export default function DrawingCanvas() {
   const handleMouseUp = () => {
     if (isPanning) {
       setIsPanning(false);
+      return;
+    }
+    
+    if (activeResizeHandle) {
+      setActiveResizeHandle(null);
+      resizeStartBbox.current = null;
+      return;
+    }
+    
+    if (isMoving) {
+      setIsMoving(false);
       return;
     }
     
@@ -358,6 +606,14 @@ export default function DrawingCanvas() {
   const handleContextMenu = (e) => {
     e.preventDefault();
   };
+
+  // Delete selected item from button
+  const deleteSelectedElement = () => {
+    if (selectedElementId) {
+      setElements(prev => prev.filter(el => el.id !== selectedElementId));
+      setSelectedElementId(null);
+    }
+  };
   
   return (
     <div 
@@ -382,9 +638,56 @@ export default function DrawingCanvas() {
         onContextMenu={handleContextMenu}
         style={{
           display: 'block',
-          cursor: isPanning ? 'grabbing' : activeTool === 'pen' ? 'crosshair' : ['line', 'arrow', 'rect', 'circle'].includes(activeTool) ? 'crosshair' : 'default'
+          cursor: isPanning ? 'grabbing' : activeTool === 'select' ? 'default' : 'crosshair'
         }}
       />
+      
+      {/* Multiline overlay textarea for text editing */}
+      {editingText && (
+        <textarea
+          value={editingText.text}
+          onChange={(e) => {
+            const val = e.target.value;
+            setEditingText(prev => ({ ...prev, text: val }));
+            updateElement(editingText.id, { text: val });
+          }}
+          onBlur={() => {
+            if (!editingText.text.trim()) {
+              setElements(prev => prev.filter(el => el.id !== editingText.id));
+              setSelectedElementId(null);
+            }
+            setEditingText(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' || (e.key === 'Enter' && e.ctrlKey)) {
+              e.currentTarget.blur();
+            }
+          }}
+          autoFocus
+          placeholder="Type here..."
+          style={{
+            position: 'absolute',
+            left: `${editingText.x * zoom + pan.x}px`,
+            top: `${editingText.y * zoom + pan.y}px`,
+            font: `${(strokeWidth * 4 + 12) * zoom}px Outfit, sans-serif`,
+            color: strokeColor,
+            background: 'transparent',
+            border: '1.5px dashed var(--accent-color)',
+            outline: 'none',
+            padding: '4px',
+            margin: 0,
+            lineHeight: 1.25,
+            caretColor: strokeColor,
+            resize: 'none',
+            zIndex: 100,
+            whiteSpace: 'pre',
+            overflow: 'hidden',
+            minWidth: `${120 * zoom}px`,
+            minHeight: `${32 * zoom}px`,
+            transformOrigin: 'top left'
+          }}
+        />
+      )}
       
       {/* Dynamic HUD Control Overlay */}
       <div className="hud-layer" style={{ pointerEvents: 'none', position: 'absolute', inset: 0 }}>
@@ -489,13 +792,26 @@ export default function DrawingCanvas() {
               <CircleIcon size={18} />
             </button>
             <button 
-              className={`tool-btn ${activeTool === 'eraser' ? 'active' : ''}`}
-              onClick={() => setActiveTool('eraser')}
-              title="Eraser (Soon)"
-              disabled
+              className={`tool-btn ${activeTool === 'text' ? 'active' : ''}`}
+              onClick={() => setActiveTool('text')}
+              title="Add Text"
             >
-              <Eraser size={18} />
+              <Type size={18} />
             </button>
+            
+            {selectedElementId && (
+              <>
+                <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.1)', margin: '0 4px' }} />
+                <button 
+                  className="tool-btn" 
+                  onClick={deleteSelectedElement} 
+                  title="Delete Selected (Del)"
+                  style={{ color: '#ef4444' }}
+                >
+                  <Trash2 size={18} />
+                </button>
+              </>
+            )}
             
             <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.1)', margin: '0 4px' }} />
             

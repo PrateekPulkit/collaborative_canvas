@@ -15,7 +15,10 @@ import {
   Maximize2,
   PaintBucket,
   Trash2,
-  Users
+  Users,
+  Copy,
+  Check,
+  ChevronRight
 } from 'lucide-react';
 import { screenToCanvas, calculateZoomPan } from '../utils/canvasMath';
 import { isPointOnElement, getHitResizeHandle, getElementBoundingBox } from '../utils/hitTest';
@@ -53,9 +56,12 @@ export default function DrawingCanvas() {
   
   // Export overlay state
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState(false);
+  const [joinInput, setJoinInput] = useState('');
   
   // Collaboration Hook
   const {
+    roomId,
     collaborators,
     myUsername,
     myColor,
@@ -131,7 +137,7 @@ export default function DrawingCanvas() {
         undo();
       }
       
-      // Redo command (Ctrl+Y or Ctrl+Shift+Z)
+      // Redo command (Ctrl+Y)
       if (e.key === 'y' && e.ctrlKey) {
         e.preventDefault();
         redo();
@@ -561,7 +567,6 @@ export default function DrawingCanvas() {
       const bbox = resizeStartBbox.current;
       if (!bbox) return;
       
-      // Snap coordinates for sizing
       const coords = snapCoords(rawCoords);
       
       let newX = element.x;
@@ -671,7 +676,6 @@ export default function DrawingCanvas() {
     
     if (!isDrawing || !currentElement) return;
     
-    // Handle drawing shape snap
     const coords = ['line', 'arrow', 'rect', 'circle'].includes(activeTool) ? snapCoords(rawCoords) : rawCoords;
     
     if (activeTool === 'pen') {
@@ -706,20 +710,20 @@ export default function DrawingCanvas() {
     if (activeResizeHandle) {
       setActiveResizeHandle(null);
       resizeStartBbox.current = null;
-      pushToHistory(elements); // Save resized geometry to history
+      pushToHistory(elements); 
       return;
     }
     
     if (isMoving) {
       setIsMoving(false);
-      pushToHistory(elements); // Save final translation to history
+      pushToHistory(elements); 
       return;
     }
     
     if (isDrawing && currentElement) {
       setIsDrawing(false);
       const nextElements = [...elements, currentElement];
-      pushToHistory(nextElements); // Save additions to history
+      pushToHistory(nextElements); 
       sendElementAdded(currentElement);
       setCurrentElement(null);
     }
@@ -755,13 +759,27 @@ export default function DrawingCanvas() {
     }
   };
 
+  // Copy shareable invitation URL link to clipboard
+  const handleCopyInviteLink = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopyFeedback(true);
+    setTimeout(() => setCopyFeedback(false), 2000);
+  };
+
+  // Handle entering custom Room ID to redirect/join
+  const handleJoinRoom = (e) => {
+    if (e.key === 'Enter' && joinInput.trim()) {
+      window.location.search = `?room=${joinInput.trim()}`;
+    }
+  };
+
   // --- Export Handlers ---
   const handleExportPng = () => {
     const pngDataUrl = exportToPng(elements);
     if (!pngDataUrl) return;
     
     const link = document.createElement('a');
-    link.download = 'flam-canvas-drawing.png';
+    link.download = `flam-canvas-room-${roomId}.png`;
     link.href = pngDataUrl;
     link.click();
     setShowExportMenu(false);
@@ -775,7 +793,7 @@ export default function DrawingCanvas() {
     const url = URL.createObjectURL(blob);
     
     const link = document.createElement('a');
-    link.download = 'flam-canvas-drawing.svg';
+    link.download = `flam-canvas-room-${roomId}.svg`;
     link.href = url;
     link.click();
     
@@ -786,7 +804,7 @@ export default function DrawingCanvas() {
   const handleExportJson = () => {
     const jsonUrl = exportToJson(elements);
     const link = document.createElement('a');
-    link.download = 'flam-canvas-project.json';
+    link.download = `flam-canvas-project-${roomId}.json`;
     link.href = jsonUrl;
     link.click();
     setShowExportMenu(false);
@@ -896,7 +914,7 @@ export default function DrawingCanvas() {
       {/* Dynamic HUD Control Overlay */}
       <div className="hud-layer" style={{ pointerEvents: 'none', position: 'absolute', inset: 0 }}>
         
-        {/* Top Header - App Title and Collab Stats */}
+        {/* Top Header - App Title, Room Sharing, and Collab Stats */}
         <div style={{
           position: 'absolute',
           top: '20px',
@@ -907,6 +925,7 @@ export default function DrawingCanvas() {
           alignItems: 'center',
           pointerEvents: 'auto'
         }}>
+          {/* Left panel: App Name */}
           <div className="glass-panel" style={{
             display: 'flex',
             alignItems: 'center',
@@ -919,12 +938,83 @@ export default function DrawingCanvas() {
               <h1 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold', color: '#fff', letterSpacing: '0.5px' }}>
                 FLAM <span style={{ color: '#a855f7' }}>Canvas</span>
               </h1>
-              <span style={{ fontSize: '10px', color: 'rgba(255, 255, 255, 0.4)' }}>R&D Prototype</span>
+              <span style={{ fontSize: '10px', color: 'rgba(255, 255, 255, 0.4)' }}>Real-Time R&D Canvas</span>
             </div>
           </div>
           
-          {/* Active Collaborators Avatars List */}
+          {/* Center-Right panels: Room Code display, Link copy, and Join inputs */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            
+            {/* Share / Invite Link badge */}
+            <div className="glass-panel" style={{
+              display: 'flex',
+              alignItems: 'center',
+              padding: '6px 12px',
+              borderRadius: '12px',
+              gap: '8px'
+            }}>
+              <span style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.5)' }}>Room:</span>
+              <span style={{ fontSize: '12px', color: '#fff', fontWeight: 'bold', letterSpacing: '0.5px' }}>{roomId}</span>
+              <button
+                onClick={handleCopyInviteLink}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: copyFeedback ? '#10b981' : 'rgba(255, 255, 255, 0.6)',
+                  cursor: 'pointer',
+                  padding: '2px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  marginLeft: '4px',
+                  transition: 'color 0.2s'
+                }}
+                title="Copy Invite Link"
+              >
+                {copyFeedback ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+            </div>
+
+            {/* Join Room Form input */}
+            <div className="glass-panel" style={{
+              display: 'flex',
+              alignItems: 'center',
+              padding: '6px 12px',
+              borderRadius: '12px',
+              gap: '6px'
+            }}>
+              <input
+                type="text"
+                value={joinInput}
+                onChange={(e) => setJoinInput(e.target.value)}
+                onKeyDown={handleJoinRoom}
+                placeholder="Join Room Code..."
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#fff',
+                  fontSize: '12px',
+                  outline: 'none',
+                  width: '100px',
+                  fontFamily: 'inherit'
+                }}
+              />
+              <button
+                onClick={() => joinInput.trim() && (window.location.search = `?room=${joinInput.trim()}`)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'rgba(255, 255, 255, 0.6)',
+                  cursor: 'pointer',
+                  padding: '2px',
+                  display: 'flex',
+                  alignItems: 'center'
+                }}
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
+
+            {/* Simulated user controls */}
             <div className="glass-panel" style={{
               display: 'flex',
               alignItems: 'center',
@@ -953,6 +1043,7 @@ export default function DrawingCanvas() {
               </button>
             </div>
 
+            {/* Online stats indicator */}
             <div className="glass-panel" style={{
               display: 'flex',
               alignItems: 'center',

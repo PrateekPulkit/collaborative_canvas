@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
+import * as Y from 'yjs';
+import { WebsocketProvider } from 'y-websocket';
 
-// Generates a random name for the local user if not specified
 const NAMES = ['Sparky', 'Pixel', 'Vector', 'Curve', 'Dot', 'Matrix', 'Raster'];
 const COLORS = ['#ec4899', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#06b6d4'];
 
@@ -13,246 +14,187 @@ function hexToRgba(hex, alpha = 0.15) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-
 export function useCollaboration(elements, setElements, pan, zoom) {
-  const [collaborators, setCollaborators] = useState({});
+  const [roomId, setRoomId] = useState('');
+  const [realCollaborators, setRealCollaborators] = useState({});
+  const [simCollaborators, setSimCollaborators] = useState({});
   const [simulationActive, setSimulationActive] = useState(true);
   
-  // Local user details
+  // Local user profile details
   const myUsername = useRef(NAMES[Math.floor(Math.random() * NAMES.length)] + '-' + Math.floor(Math.random() * 100));
   const myColor = useRef(COLORS[Math.floor(Math.random() * COLORS.length)]);
   
-  // Reference for BroadcastChannel
-  const channelRef = useRef(null);
+  // Keep Yjs instances in refs
+  const yDocRef = useRef(null);
+  const providerRef = useRef(null);
+  const yElementsRef = useRef(null);
   
-  // Keep track of elements via ref to avoid stale closure in Broadcast listener
-  const elementsRef = useRef(elements);
-  useEffect(() => {
-    elementsRef.current = elements;
-  }, [elements]);
+  // Internal flag to avoid update loops
+  const isSyncingFromYjs = useRef(false);
   
-  // 1. Set up BroadcastChannel for local cross-tab sync
+  // 1. Initialize Room ID, Yjs Document, and WebSocket connection
   useEffect(() => {
-    const channel = new BroadcastChannel('flam-canvas-collab');
-    channelRef.current = channel;
+    // Read or generate room code
+    const params = new URLSearchParams(window.location.search);
+    let rId = params.get('room');
+    if (!rId) {
+      rId = Math.random().toString(36).substring(2, 8);
+      // Update URL silently without full reload
+      const newUrl = `${window.location.protocol}//${window.location.host}${window.location.pathname}?room=${rId}`;
+      window.history.replaceState({ path: newUrl }, '', newUrl);
+    }
+    setRoomId(rId);
     
-    // Request state from other tabs on load
-    channel.postMessage({ type: 'sync-request', from: myUsername.current });
+    // Create Yjs doc and connect to public WebSocket relay
+    const doc = new Y.Doc();
+    yDocRef.current = doc;
     
-    const handleMessage = (e) => {
-      const { type, from, data } = e.data;
-      if (from === myUsername.current) return; // Ignore own messages
+    const provider = new WebsocketProvider('wss://demos.yjs.dev', `flam-canvas-room-${rId}`, doc);
+    providerRef.current = provider;
+    
+    const yElements = doc.getArray('elements');
+    yElementsRef.current = yElements;
+    
+    // Set local presence in Yjs awareness
+    const awareness = provider.awareness;
+    awareness.setLocalStateField('user', {
+      name: myUsername.current,
+      color: myColor.current,
+      cursor: null,
+      emoji: null,
+      emojiTime: null
+    });
+    
+    // Listen to shared array updates
+    yElements.observe(() => {
+      isSyncingFromYjs.current = true;
+      setElements(yElements.toArray());
+      isSyncingFromYjs.current = false;
+    });
+    
+    // Listen to network awareness changes (cursors, emoji reactions)
+    awareness.on('change', () => {
+      const states = awareness.getStates();
+      const updatedCollabs = {};
       
-      switch (type) {
-        case 'sync-request':
-          // Send current state to the requesting tab
-          channel.postMessage({
-            type: 'elements-sync',
-            from: myUsername.current,
-            data: { elements: elementsRef.current }
-          });
-          break;
-          
-        case 'elements-sync':
-          if (data && data.elements) {
-            setElements(data.elements);
-          }
-          break;
-          
-        case 'element-added':
-          if (data && data.element) {
-            setElements(prev => {
-              if (prev.some(el => el.id === data.element.id)) return prev;
-              return [...prev, data.element];
-            });
-          }
-          break;
-          
-        case 'element-updated':
-          if (data && data.id && data.updates) {
-            setElements(prev => prev.map(el => el.id === data.id ? { ...el, ...data.updates } : el));
-          }
-          break;
-          
-        case 'element-deleted':
-          if (data && data.id) {
-            setElements(prev => prev.filter(el => el.id !== data.id));
-          }
-          break;
-          
-        case 'cursor-move':
-          if (data && data.coords) {
-            setCollaborators(prev => ({
-              ...prev,
-              [from]: {
-                ...prev[from],
-                name: from,
-                color: data.color || '#fff',
-                cursor: data.coords,
-                lastActive: Date.now(),
-                isSimulated: false
-              }
-            }));
-          }
-          break;
-          
-        case 'emoji-reaction':
-          if (data && data.emoji) {
-            triggerFloatingEmoji(from, data.emoji);
-          }
-          break;
-          
-        default:
-          break;
-      }
-    };
-    
-    channel.addEventListener('message', handleMessage);
-    
-    // Clean up inactive tabs periodically
-    const interval = setInterval(() => {
-      setCollaborators(prev => {
-        const next = { ...prev };
-        let changed = false;
-        const now = Date.now();
-        
-        Object.keys(next).forEach(key => {
-          // If a collaborator has been inactive for more than 8 seconds, remove them
-          if (!next[key].isSimulated && now - next[key].lastActive > 8000) {
-            delete next[key];
-            changed = true;
-          }
-        });
-        
-        return changed ? next : prev;
+      states.forEach((state, clientID) => {
+        if (state.user && state.user.name !== myUsername.current) {
+          updatedCollabs[state.user.name] = {
+            name: state.user.name,
+            color: state.user.color,
+            cursor: state.user.cursor,
+            emoji: state.user.emoji,
+            emojiTime: state.user.emojiTime,
+            isSimulated: false
+          };
+        }
       });
-    }, 4000);
+      
+      setRealCollaborators(updatedCollabs);
+    });
     
     return () => {
-      channel.removeEventListener('message', handleMessage);
-      channel.close();
-      clearInterval(interval);
+      provider.disconnect();
+      doc.destroy();
     };
   }, [setElements]);
   
-  // 2. Local API for broadcasting changes
+  // 2. Local APIs mapped to modify Yjs Shared Data (synced instantly across users)
+  
   const sendElementAdded = (element) => {
-    if (channelRef.current) {
-      channelRef.current.postMessage({
-        type: 'element-added',
-        from: myUsername.current,
-        data: { element }
-      });
-    }
+    if (isSyncingFromYjs.current || !yElementsRef.current) return;
+    yElementsRef.current.push([element]);
   };
   
   const sendElementUpdated = (id, updates) => {
-    if (channelRef.current) {
-      channelRef.current.postMessage({
-        type: 'element-updated',
-        from: myUsername.current,
-        data: { id, updates }
+    if (isSyncingFromYjs.current || !yElementsRef.current) return;
+    
+    const elementsArr = yElementsRef.current.toArray();
+    const index = elementsArr.findIndex(el => el.id === id);
+    if (index !== -1) {
+      const currentVal = elementsArr[index];
+      // Atomic transaction update
+      yDocRef.current.transact(() => {
+        yElementsRef.current.delete(index, 1);
+        yElementsRef.current.insert(index, [{ ...currentVal, ...updates }]);
       });
     }
   };
   
   const sendElementDeleted = (id) => {
-    if (channelRef.current) {
-      channelRef.current.postMessage({
-        type: 'element-deleted',
-        from: myUsername.current,
-        data: { id }
-      });
+    if (isSyncingFromYjs.current || !yElementsRef.current) return;
+    
+    const elementsArr = yElementsRef.current.toArray();
+    const index = elementsArr.findIndex(el => el.id === id);
+    if (index !== -1) {
+      yElementsRef.current.delete(index, 1);
     }
   };
   
+  const sendBoardSync = (allElements) => {
+    if (isSyncingFromYjs.current || !yElementsRef.current) return;
+    
+    // Clear and push elements atomically
+    yDocRef.current.transact(() => {
+      yElementsRef.current.delete(0, yElementsRef.current.length);
+      if (allElements.length > 0) {
+        yElementsRef.current.push(allElements);
+      }
+    });
+  };
+  
   const sendCursorMove = (coords) => {
-    if (channelRef.current) {
-      channelRef.current.postMessage({
-        type: 'cursor-move',
-        from: myUsername.current,
-        data: { coords, color: myColor.current }
+    if (!providerRef.current) return;
+    const awareness = providerRef.current.awareness;
+    const localState = awareness.getLocalState();
+    
+    if (localState && localState.user) {
+      awareness.setLocalStateField('user', {
+        ...localState.user,
+        cursor: coords
       });
     }
   };
   
   const sendEmojiReaction = (emoji) => {
-    triggerFloatingEmoji(myUsername.current, emoji);
-    if (channelRef.current) {
-      channelRef.current.postMessage({
-        type: 'emoji-reaction',
-        from: myUsername.current,
-        data: { emoji }
-      });
-    }
-  };
-
-  const sendBoardSync = (allElements) => {
-    if (channelRef.current) {
-      channelRef.current.postMessage({
-        type: 'elements-sync',
-        from: myUsername.current,
-        data: { elements: allElements }
-      });
-    }
-  };
-  
-  // 3. Helper to show temporary emoji reactions floating from cursor
-  const triggerFloatingEmoji = (username, emoji) => {
-    setCollaborators(prev => {
-      if (!prev[username]) return prev;
-      return {
-        ...prev,
-        [username]: {
-          ...prev[username],
-          emoji: emoji,
-          emojiTime: Date.now()
-        }
-      };
-    });
+    if (!providerRef.current) return;
+    const awareness = providerRef.current.awareness;
+    const localState = awareness.getLocalState();
     
-    // Clear emoji after 2 seconds
-    setTimeout(() => {
-      setCollaborators(prev => {
-        if (!prev[username] || prev[username].emoji !== emoji) return prev;
-        return {
-          ...prev,
-          [username]: {
-            ...prev[username],
-            emoji: null
-          }
-        };
+    if (localState && localState.user) {
+      awareness.setLocalStateField('user', {
+        ...localState.user,
+        emoji: emoji,
+        emojiTime: Date.now()
       });
-    }, 2000);
+      
+      // Clear reaction local presence state after 2 seconds
+      setTimeout(() => {
+        const currentState = awareness.getLocalState();
+        if (currentState && currentState.user && currentState.user.emoji === emoji) {
+          awareness.setLocalStateField('user', {
+            ...currentState.user,
+            emoji: null
+          });
+        }
+      }, 2000);
+    }
   };
   
-  // 4. Simulated Multiplayer Engine
+  // 3. Simulated Mock Users Loop (unchanged, runs side-by-side with socket users)
   useEffect(() => {
     if (!simulationActive) {
-      // Remove simulated users if turned off
-      setCollaborators(prev => {
-        const next = { ...prev };
-        let changed = false;
-        Object.keys(next).forEach(k => {
-          if (next[k].isSimulated) {
-            delete next[k];
-            changed = true;
-          }
-        });
-        return changed ? next : prev;
-      });
+      setSimCollaborators({});
       return;
     }
     
-    // Initialize mock collaborators
     const mockUsers = [
       { name: 'Alice (R&D)', color: '#ec4899', x0: 200, y0: 300, phase: 0, speed: 0.02 },
       { name: 'Bob (Core)', color: '#eab308', x0: 600, y0: 250, phase: Math.PI / 2, speed: 0.015 },
       { name: 'Charlie (UX)', color: '#3b82f6', x0: 400, y0: 500, phase: Math.PI, speed: 0.01 }
     ];
     
-    // Create cursors in collaborators state
-    setCollaborators(prev => {
+    setSimCollaborators(prev => {
       const next = { ...prev };
       mockUsers.forEach(u => {
         next[u.name] = {
@@ -268,16 +210,14 @@ export function useCollaboration(elements, setElements, pan, zoom) {
     
     let t = 0;
     
-    // Interval to animate simulated user cursor movements
     const cursorInterval = setInterval(() => {
       t += 0.05;
-      setCollaborators(prev => {
+      setSimCollaborators(prev => {
         const next = { ...prev };
         let changed = false;
         
         mockUsers.forEach(u => {
           if (next[u.name]) {
-            // Infinite figure-8 movement (Lissajous curves)
             const dx = 180 * Math.sin(t * u.speed * 20 + u.phase);
             const dy = 90 * Math.sin(t * u.speed * 40 + u.phase * 2);
             
@@ -296,17 +236,15 @@ export function useCollaboration(elements, setElements, pan, zoom) {
       });
     }, 50);
     
-    // Interval to simulate drawings & emoji reactions by mock users
     const actionInterval = setInterval(() => {
       const picker = Math.random();
       const user = mockUsers[Math.floor(Math.random() * mockUsers.length)];
       
       if (picker < 0.35) {
-        // Trigger a simulated emoji reaction
         const emojis = ['🔥', '🎉', '👍', '❤️', '💡', '✨'];
         const emoji = emojis[Math.floor(Math.random() * emojis.length)];
         
-        setCollaborators(prev => {
+        setSimCollaborators(prev => {
           if (!prev[user.name]) return prev;
           return {
             ...prev,
@@ -319,7 +257,7 @@ export function useCollaboration(elements, setElements, pan, zoom) {
         });
         
         setTimeout(() => {
-          setCollaborators(prev => {
+          setSimCollaborators(prev => {
             if (!prev[user.name] || prev[user.name].emoji !== emoji) return prev;
             return {
               ...prev,
@@ -329,9 +267,7 @@ export function useCollaboration(elements, setElements, pan, zoom) {
         }, 2000);
         
       } else if (picker < 0.65) {
-        // Alice or Bob draws a shape!
-        // We get the current simulated cursor position
-        setCollaborators(prev => {
+        setSimCollaborators(prev => {
           const currentCursor = prev[user.name]?.cursor;
           if (!currentCursor) return prev;
           
@@ -350,10 +286,9 @@ export function useCollaboration(elements, setElements, pan, zoom) {
             dashPattern: 'solid'
           };
           
-          // Add shape to elements list
-          setElements(prevElements => [...prevElements, newShape]);
+          // Adding to local elements triggers addition to Yjs array
+          sendElementAdded(newShape);
           
-          // Animate drawing: expand the shape over 600ms
           let frame = 0;
           const totalFrames = 15;
           const targetW = (Math.random() * 80 + 40) * (Math.random() > 0.5 ? 1 : -1);
@@ -364,7 +299,7 @@ export function useCollaboration(elements, setElements, pan, zoom) {
             const width = (targetW / totalFrames) * frame;
             const height = (targetH / totalFrames) * frame;
             
-            setElements(prevEls => prevEls.map(el => el.id === shapeId ? { ...el, width, height } : el));
+            sendElementUpdated(shapeId, { width, height });
             
             if (frame >= totalFrames) {
               clearInterval(drawInterval);
@@ -380,10 +315,14 @@ export function useCollaboration(elements, setElements, pan, zoom) {
       clearInterval(cursorInterval);
       clearInterval(actionInterval);
     };
-  }, [simulationActive, setElements]);
+  }, [simulationActive]);
+  
+  // Merge network users with local mock animated cursors
+  const mergedCollaborators = { ...realCollaborators, ...simCollaborators };
   
   return {
-    collaborators,
+    roomId,
+    collaborators: mergedCollaborators,
     myUsername: myUsername.current,
     myColor: myColor.current,
     simulationActive,

@@ -504,6 +504,7 @@ export default function DrawingCanvas() {
         strokeWidth
       });
     } else if (activeTool === 'text') {
+      e.preventDefault(); // Prevents focus theft so text editor stays open
       const textId = `text-${Date.now()}`;
       const newText = {
         id: textId,

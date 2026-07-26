@@ -7,7 +7,6 @@ import {
   Square, 
   Circle as CircleIcon, 
   Type,
-  Eraser, 
   Undo2, 
   Redo2, 
   Download, 
@@ -15,10 +14,13 @@ import {
   Sparkles,
   Maximize2,
   PaintBucket,
-  Trash2
+  Trash2,
+  Users,
+  Smile
 } from 'lucide-react';
 import { screenToCanvas, calculateZoomPan } from '../utils/canvasMath';
 import { isPointOnElement, getHitResizeHandle, getElementBoundingBox } from '../utils/hitTest';
+import { useCollaboration } from '../hooks/useCollaboration';
 
 // Helper to convert hex to semi-transparent RGBA for shape fills
 function hexToRgba(hex, alpha = 0.15) {
@@ -45,6 +47,20 @@ export default function DrawingCanvas() {
   const [selectedElementId, setSelectedElementId] = useState(null);
   const [editingText, setEditingText] = useState(null); // { id, x, y, text }
   
+  // Collaboration Hook
+  const {
+    collaborators,
+    myUsername,
+    myColor,
+    simulationActive,
+    setSimulationActive,
+    sendElementAdded,
+    sendElementUpdated,
+    sendElementDeleted,
+    sendCursorMove,
+    sendEmojiReaction
+  } = useCollaboration(elements, setElements, pan, zoom);
+
   // Interaction states
   const [isDrawing, setIsDrawing] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
@@ -67,6 +83,7 @@ export default function DrawingCanvas() {
       
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedElementId) {
         setElements(prev => prev.filter(el => el.id !== selectedElementId));
+        sendElementDeleted(selectedElementId);
         setSelectedElementId(null);
       }
     };
@@ -90,12 +107,12 @@ export default function DrawingCanvas() {
     handleResize(); // Initial call
     
     return () => window.removeEventListener('resize', handleResize);
-  }, [elements, currentElement, zoom, pan, showGrid, selectedElementId, editingText]);
+  }, [elements, currentElement, zoom, pan, showGrid, selectedElementId, editingText, collaborators]);
   
-  // Redraw canvas whenever elements or viewport state changes
+  // Redraw canvas whenever elements, viewport, or collaborators change
   useEffect(() => {
     draw();
-  }, [elements, currentElement, zoom, pan, showGrid, selectedElementId, editingText]);
+  }, [elements, currentElement, zoom, pan, showGrid, selectedElementId, editingText, collaborators]);
   
   // Main draw loop
   const draw = () => {
@@ -119,7 +136,6 @@ export default function DrawingCanvas() {
     
     // Draw completed elements
     elements.forEach(element => {
-      // Don't draw text on canvas while editing it in textarea
       if (editingText && editingText.id === element.id) return;
       drawElement(ctx, element);
     });
@@ -137,6 +153,12 @@ export default function DrawingCanvas() {
       }
     }
     
+    // Draw other users' cursors and avatars
+    Object.values(collaborators).forEach(collab => {
+      if (collab.name === myUsername) return;
+      drawCollaboratorCursor(ctx, collab);
+    });
+    
     ctx.restore();
   };
   
@@ -147,7 +169,6 @@ export default function DrawingCanvas() {
     const gridColor = 'rgba(255, 255, 255, 0.05)';
     ctx.fillStyle = gridColor;
     
-    // Compute visible bounding box in canvas coordinates
     const startX = Math.floor((-pan.x / zoom) / gridSize) * gridSize;
     const endX = Math.ceil(((width - pan.x) / zoom) / gridSize) * gridSize;
     const startY = Math.floor((-pan.y / zoom) / gridSize) * gridSize;
@@ -175,7 +196,6 @@ export default function DrawingCanvas() {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     
-    // Handle dashed/dotted patterns
     if (element.dashPattern === 'dashed') {
       ctx.setLineDash([12, 8]);
     } else if (element.dashPattern === 'dotted') {
@@ -296,12 +316,10 @@ export default function DrawingCanvas() {
     ctx.lineWidth = 1.5 / zoom;
     ctx.setLineDash([6 / zoom, 4 / zoom]);
     
-    // Outer bounding rect
     ctx.beginPath();
     ctx.rect(bbox.x - 4 / zoom, bbox.y - 4 / zoom, bbox.width + 8 / zoom, bbox.height + 8 / zoom);
     ctx.stroke();
     
-    // Draw Resizing handle dots
     ctx.fillStyle = '#ffffff';
     ctx.strokeStyle = '#a855f7';
     ctx.lineWidth = 1.5 / zoom;
@@ -325,11 +343,56 @@ export default function DrawingCanvas() {
     ctx.restore();
   };
 
-  // Helper to update elements by ID
-  const updateElement = (id, updates) => {
-    setElements(prev => prev.map(el => el.id === id ? { ...el, ...updates } : el));
+  // Render collaborator cursor arrow and name badge
+  const drawCollaboratorCursor = (ctx, collab) => {
+    if (!collab.cursor) return;
+    const { x, y } = collab.cursor;
+    
+    ctx.save();
+    
+    // Draw cursor arrow
+    ctx.fillStyle = collab.color;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + 12 / zoom, y + 12 / zoom);
+    ctx.lineTo(x + 4 / zoom, y + 14 / zoom);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Draw name label
+    const fontSize = 10 / zoom;
+    ctx.font = `bold ${fontSize}px Outfit, sans-serif`;
+    const paddingX = 6 / zoom;
+    const paddingY = 3 / zoom;
+    const textWidth = ctx.measureText(collab.name).width;
+    
+    const rx = x + 10 / zoom;
+    const ry = y + 14 / zoom;
+    const rw = textWidth + paddingX * 2;
+    const rh = fontSize + paddingY * 2;
+    
+    ctx.fillStyle = collab.color;
+    ctx.beginPath();
+    // Using simple round rectangle draw compatibility
+    if (ctx.roundRect) {
+      ctx.roundRect(rx, ry, rw, rh, 4 / zoom);
+    } else {
+      ctx.rect(rx, ry, rw, rh);
+    }
+    ctx.fill();
+    
+    ctx.fillStyle = '#0d0d12'; // High contrast text color on cursor label
+    ctx.fillText(collab.name, rx + paddingX, ry + paddingY);
+    
+    // Draw floating emoji reaction
+    if (collab.emoji) {
+      ctx.font = `${22 / zoom}px Outfit, sans-serif`;
+      ctx.fillText(collab.emoji, x + 8 / zoom, y - 10 / zoom);
+    }
+    
+    ctx.restore();
   };
-  
+
   // Mouse / Touch Event Handlers
   const handleMouseDown = (e) => {
     const canvas = canvasRef.current;
@@ -348,7 +411,6 @@ export default function DrawingCanvas() {
     dragStart.current = coords;
     
     if (activeTool === 'select') {
-      // 1. Check if clicked a resize handle of the currently selected element
       if (selectedElementId) {
         const selectedEl = elements.find(el => el.id === selectedElementId);
         if (selectedEl) {
@@ -361,7 +423,6 @@ export default function DrawingCanvas() {
         }
       }
       
-      // 2. Otherwise do hit testing on elements to select or move
       const clickedElement = [...elements]
         .reverse()
         .find(el => isPointOnElement(coords.x, coords.y, el));
@@ -386,7 +447,6 @@ export default function DrawingCanvas() {
         strokeWidth
       });
     } else if (activeTool === 'text') {
-      // Create new text element and trigger input overlay
       const textId = `text-${Date.now()}`;
       const newText = {
         id: textId,
@@ -423,6 +483,9 @@ export default function DrawingCanvas() {
     
     const coords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
     
+    // Broadcast local cursor position
+    sendCursorMove(coords);
+    
     if (isPanning) {
       setPan({
         x: e.clientX - panStart.current.x,
@@ -443,9 +506,9 @@ export default function DrawingCanvas() {
       let newY = element.y;
       let newWidth = element.width;
       let newHeight = element.height;
+      let updatedPoints = null;
       
       if (element.type === 'pen') {
-        // Drag resizing freehand paths is done by mapping coordinates
         let scaleX = 1;
         let scaleY = 1;
         
@@ -467,20 +530,19 @@ export default function DrawingCanvas() {
           scaleY = Math.max(0.1, (coords.y - bbox.y) / bbox.height);
         }
         
-        // Target base anchor point depending on corner
         const anchorX = ['nw', 'sw'].includes(activeResizeHandle) ? bbox.x + bbox.width : bbox.x;
         const anchorY = ['nw', 'ne'].includes(activeResizeHandle) ? bbox.y + bbox.height : bbox.y;
         
-        const scaledPoints = element.points.map(p => ({
+        updatedPoints = element.points.map(p => ({
           x: anchorX + (p.x - anchorX) * scaleX,
           y: anchorY + (p.y - anchorY) * scaleY
         }));
         
-        updateElement(selectedElementId, { points: scaledPoints });
+        updateElement(selectedElementId, { points: updatedPoints });
+        sendElementUpdated(selectedElementId, { points: updatedPoints });
         return;
       }
 
-      // Geometric resizing formulas
       if (activeResizeHandle === 'se') {
         newWidth = coords.x - bbox.x;
         newHeight = coords.y - bbox.y;
@@ -503,12 +565,15 @@ export default function DrawingCanvas() {
         newHeight = coords.y - bbox.y;
       }
       
-      updateElement(selectedElementId, {
+      const updates = {
         x: newX,
         y: newY,
         width: newWidth,
         height: newHeight
-      });
+      };
+      
+      updateElement(selectedElementId, updates);
+      sendElementUpdated(selectedElementId, updates);
       return;
     }
     
@@ -521,18 +586,22 @@ export default function DrawingCanvas() {
       const dy = coords.y - dragStart.current.y;
       dragStart.current = coords;
       
+      let updates = {};
       if (element.type === 'pen') {
         const shiftedPoints = element.points.map(p => ({
           x: p.x + dx,
           y: p.y + dy
         }));
-        updateElement(selectedElementId, { points: shiftedPoints });
+        updates = { points: shiftedPoints };
       } else {
-        updateElement(selectedElementId, {
+        updates = {
           x: element.x + dx,
           y: element.y + dy
-        });
+        };
       }
+      
+      updateElement(selectedElementId, updates);
+      sendElementUpdated(selectedElementId, updates);
       return;
     }
     
@@ -582,6 +651,7 @@ export default function DrawingCanvas() {
     if (isDrawing && currentElement) {
       setIsDrawing(false);
       setElements(prev => [...prev, currentElement]);
+      sendElementAdded(currentElement); // Sync addition to others
       setCurrentElement(null);
     }
   };
@@ -611,9 +681,13 @@ export default function DrawingCanvas() {
   const deleteSelectedElement = () => {
     if (selectedElementId) {
       setElements(prev => prev.filter(el => el.id !== selectedElementId));
+      sendElementDeleted(selectedElementId);
       setSelectedElementId(null);
     }
   };
+
+  // List of simulated and real collaborators in session
+  const activeCollabList = Object.values(collaborators);
   
   return (
     <div 
@@ -624,7 +698,7 @@ export default function DrawingCanvas() {
         width: '100vw',
         height: '100vh',
         overflow: 'hidden',
-        background: '#0d0d12', // Premium deep space dark theme
+        background: '#0d0d12',
         userSelect: 'none'
       }}
     >
@@ -650,11 +724,19 @@ export default function DrawingCanvas() {
             const val = e.target.value;
             setEditingText(prev => ({ ...prev, text: val }));
             updateElement(editingText.id, { text: val });
+            sendElementUpdated(editingText.id, { text: val });
           }}
           onBlur={() => {
             if (!editingText.text.trim()) {
               setElements(prev => prev.filter(el => el.id !== editingText.id));
+              sendElementDeleted(editingText.id);
               setSelectedElementId(null);
+            } else {
+              // Final sync on save
+              const finalEl = elements.find(el => el.id === editingText.id);
+              if (finalEl) {
+                sendElementAdded(finalEl);
+              }
             }
             setEditingText(null);
           }}
@@ -719,15 +801,94 @@ export default function DrawingCanvas() {
             </div>
           </div>
           
-          <div className="glass-panel" style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '8px 14px',
-            borderRadius: '12px'
-          }}>
-            <span className="online-indicator"></span>
-            <span style={{ fontSize: '12px', color: '#fff', fontWeight: 500 }}>Live Session</span>
+          {/* Active Collaborators Avatars List */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div className="glass-panel" style={{
+              display: 'flex',
+              alignItems: 'center',
+              padding: '6px 12px',
+              borderRadius: '12px',
+              gap: '6px'
+            }}>
+              <button 
+                onClick={() => setSimulationActive(!simulationActive)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'transparent',
+                  border: 'none',
+                  color: simulationActive ? '#a855f7' : 'rgba(255, 255, 255, 0.5)',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  textTransform: 'uppercase'
+                }}
+                title={simulationActive ? "Turn Off Simulated Users" : "Turn On Simulated Users"}
+              >
+                <Users size={14} />
+                <span>Sim: {simulationActive ? 'On' : 'Off'}</span>
+              </button>
+            </div>
+
+            <div className="glass-panel" style={{
+              display: 'flex',
+              alignItems: 'center',
+              padding: '6px 12px',
+              borderRadius: '12px',
+              gap: '8px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', marginRight: '4px' }}>
+                {/* Local user badge */}
+                <div 
+                  style={{
+                    width: '24px',
+                    height: '24px',
+                    borderRadius: '50%',
+                    backgroundColor: myColor,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '10px',
+                    fontWeight: 'bold',
+                    color: '#0d0d12',
+                    border: '2px solid #fff',
+                    boxShadow: `0 0 6px ${myColor}`
+                  }}
+                  title={`You (${myUsername})`}
+                >
+                  ME
+                </div>
+                
+                {/* Other collaborators */}
+                {activeCollabList.map(c => (
+                  <div 
+                    key={c.name}
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      borderRadius: '50%',
+                      backgroundColor: c.color,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '10px',
+                      fontWeight: 'bold',
+                      color: '#0d0d12',
+                      border: '2px solid #0d0d12',
+                      marginLeft: '-8px'
+                    }}
+                    title={c.name}
+                  >
+                    {c.name.slice(0, 1).toUpperCase()}
+                  </div>
+                ))}
+              </div>
+              <span className="online-indicator"></span>
+              <span style={{ fontSize: '12px', color: '#fff', fontWeight: 500 }}>
+                {activeCollabList.length + 1} Online
+              </span>
+            </div>
           </div>
         </div>
 
@@ -832,6 +993,27 @@ export default function DrawingCanvas() {
                   transition: 'transform 0.2s, border-color 0.2s'
                 }}
               />
+            ))}
+          </div>
+
+          {/* Emoji Reactions floating picker */}
+          <div className="glass-panel" style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            padding: '6px',
+            borderRadius: '16px'
+          }}>
+            {['👍', '🔥', '🎉', '❤️', '💡', '✨'].map(emoji => (
+              <button
+                key={emoji}
+                onClick={() => sendEmojiReaction(emoji)}
+                className="tool-btn"
+                style={{ width: '32px', height: '32px', fontSize: '16px' }}
+                title={`React with ${emoji}`}
+              >
+                {emoji}
+              </button>
             ))}
           </div>
 

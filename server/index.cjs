@@ -291,6 +291,6 @@ io.on('connection', (socket) => {
 // Start DB first, then HTTP server
 initDatabase().then(() => {
   server.listen(PORT, () => {
-    console.log(`Full-stack server is running on port ${PORT}`);
+    console.log('Full-stack server is running');
   });
 });

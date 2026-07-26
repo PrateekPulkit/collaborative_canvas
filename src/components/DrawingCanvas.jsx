@@ -240,7 +240,7 @@ export default function DrawingCanvas() {
   const drawGridBackground = (ctx, width, height) => {
     ctx.save();
     const gridSize = 40;
-    const gridColor = 'rgba(255, 255, 255, 0.05)';
+    const gridColor = 'rgba(15, 23, 42, 0.08)';
     ctx.fillStyle = gridColor;
     
     const startX = Math.floor((-pan.x / zoom) / gridSize) * gridSize;
@@ -912,7 +912,7 @@ export default function DrawingCanvas() {
         width: '100vw',
         height: '100vh',
         overflow: 'hidden',
-        background: '#0d0d12',
+        background: 'var(--bg-color)',
         userSelect: 'none'
       }}
     >
@@ -1002,10 +1002,10 @@ export default function DrawingCanvas() {
           <div className="glass-panel canvas-header-left">
             <Sparkles size={20} color="#a855f7" className="pulse-animation" />
             <div>
-              <h1 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold', color: '#fff', letterSpacing: '0.5px' }}>
+              <h1 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold', color: 'var(--fg-color)', letterSpacing: '0.5px' }}>
                 FLAM <span style={{ color: '#a855f7' }}>Canvas</span>
               </h1>
-              <span style={{ fontSize: '10px', color: 'rgba(255, 255, 255, 0.4)' }}>Real-Time R&D Canvas</span>
+              <span style={{ fontSize: '10px', color: 'rgba(15, 23, 42, 0.45)' }}>Real-Time R&D Canvas</span>
             </div>
           </div>
           
@@ -1020,14 +1020,14 @@ export default function DrawingCanvas() {
               borderRadius: '12px',
               gap: '8px'
             }}>
-              <span style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.5)' }}>Room Code:</span>
-              <span style={{ fontSize: '12px', color: '#fff', fontWeight: 'bold', letterSpacing: '0.5px' }}>{roomId}</span>
+              <span style={{ fontSize: '12px', color: 'rgba(15, 23, 42, 0.5)' }}>Room Code:</span>
+              <span style={{ fontSize: '12px', color: 'var(--fg-color)', fontWeight: 'bold', letterSpacing: '0.5px' }}>{roomId}</span>
               <button
                 onClick={handleCopyInviteLink}
                 style={{
                   background: 'transparent',
                   border: 'none',
-                  color: copyFeedback ? '#10b981' : 'rgba(255, 255, 255, 0.6)',
+                  color: copyFeedback ? '#10b981' : 'rgba(15, 23, 42, 0.6)',
                   cursor: 'pointer',
                   padding: '2px',
                   display: 'flex',
@@ -1058,7 +1058,7 @@ export default function DrawingCanvas() {
                 style={{
                   background: 'transparent',
                   border: 'none',
-                  color: '#fff',
+                  color: 'var(--fg-color)',
                   fontSize: '12px',
                   outline: 'none',
                   width: '100px',
@@ -1075,7 +1075,7 @@ export default function DrawingCanvas() {
                 style={{
                   background: 'transparent',
                   border: 'none',
-                  color: 'rgba(255, 255, 255, 0.6)',
+                  color: 'rgba(15, 23, 42, 0.6)',
                   cursor: 'pointer',
                   padding: '2px',
                   display: 'flex',
@@ -1106,8 +1106,8 @@ export default function DrawingCanvas() {
                     justifyContent: 'center',
                     fontSize: '10px',
                     fontWeight: 'bold',
-                    color: '#0d0d12',
-                    border: '2px solid #fff',
+                    color: '#ffffff',
+                    border: '2px solid var(--bg-color)',
                     boxShadow: `0 0 6px ${myColor}`
                   }}
                   title={`You (${myUsername})`}
@@ -1128,8 +1128,8 @@ export default function DrawingCanvas() {
                       justifyContent: 'center',
                       fontSize: '10px',
                       fontWeight: 'bold',
-                      color: '#0d0d12',
-                      border: '2px solid #0d0d12',
+                      color: '#ffffff',
+                      border: '2px solid var(--bg-color)',
                       marginLeft: '-8px'
                     }}
                     title={c.name}
@@ -1139,7 +1139,7 @@ export default function DrawingCanvas() {
                 ))}
               </div>
               <span className="online-indicator"></span>
-              <span style={{ fontSize: '12px', color: '#fff', fontWeight: 500 }}>
+              <span style={{ fontSize: '12px', color: 'var(--fg-color)', fontWeight: 500 }}>
                 {activeCollabList.length + 1} Online
               </span>
             </div>
@@ -1207,7 +1207,7 @@ export default function DrawingCanvas() {
             
             {selectedElementId && (
               <>
-                <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.1)', margin: '0 4px' }} />
+                <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(15, 23, 42, 0.08)', margin: '0 4px' }} />
                 <button 
                   className="tool-btn" 
                   onClick={deleteSelectedElement} 
@@ -1219,10 +1219,10 @@ export default function DrawingCanvas() {
               </>
             )}
             
-            <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.1)', margin: '0 4px' }} />
+            <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(15, 23, 42, 0.08)', margin: '0 4px' }} />
             
             {/* Color circles */}
-            {['#a855f7', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#ffffff'].map(color => (
+            {['#a855f7', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#0f172a'].map(color => (
               <button 
                 key={color}
                 onClick={() => setStrokeColor(color)}
@@ -1231,7 +1231,7 @@ export default function DrawingCanvas() {
                   height: '20px',
                   borderRadius: '50%',
                   backgroundColor: color,
-                  border: strokeColor === color ? '2px solid #fff' : '2px solid transparent',
+                  border: strokeColor === color ? '2px solid var(--fg-color)' : '2px solid rgba(15, 23, 42, 0.15)',
                   padding: 0,
                   cursor: 'pointer',
                   transform: strokeColor === color ? 'scale(1.15)' : 'scale(1)',
@@ -1287,7 +1287,7 @@ export default function DrawingCanvas() {
               <Sliders size={18} />
             </button>
             
-            <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.1)' }} />
+            <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(15, 23, 42, 0.08)' }} />
             
             {/* Undo / Redo controls */}
             <button 
@@ -1307,14 +1307,14 @@ export default function DrawingCanvas() {
               <Redo2 size={16} />
             </button>
             
-            <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.1)' }} />
+            <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(15, 23, 42, 0.08)' }} />
 
             <div style={{
               display: 'flex',
               alignItems: 'center',
               padding: '0 4px',
               fontSize: '12px',
-              color: 'rgba(255, 255, 255, 0.7)',
+              color: 'rgba(15, 23, 42, 0.7)',
               fontWeight: 500,
               minWidth: '40px',
               justifyContent: 'center'
@@ -1364,7 +1364,7 @@ export default function DrawingCanvas() {
                 <button className="dropdown-item" onClick={handleExportPng}>Export PNG</button>
                 <button className="dropdown-item" onClick={handleExportSvg}>Export SVG</button>
                 <button className="dropdown-item" onClick={handleExportJson}>Save Project (JSON)</button>
-                <div style={{ height: '1px', backgroundColor: 'rgba(255, 255, 255, 0.08)', margin: '4px 0' }} />
+                <div style={{ height: '1px', backgroundColor: 'rgba(15, 23, 42, 0.08)', margin: '4px 0' }} />
                 <label className="dropdown-item" style={{ cursor: 'pointer', display: 'block' }}>
                   <span>Load Project...</span>
                   <input type="file" accept=".json" onChange={handleImportJson} style={{ display: 'none' }} />
@@ -1384,10 +1384,10 @@ export default function DrawingCanvas() {
             gap: '14px',
             width: '180px'
           }}>
-            <span style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(255, 255, 255, 0.4)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Element Styling</span>
+            <span style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(15, 23, 42, 0.4)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Element Styling</span>
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <span style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.7)' }}>Thickness: {strokeWidth}px</span>
+              <span style={{ fontSize: '12px', color: 'rgba(15, 23, 42, 0.7)' }}>Thickness: {strokeWidth}px</span>
               <input 
                 type="range" 
                 min="1" 
@@ -1402,10 +1402,10 @@ export default function DrawingCanvas() {
               />
             </div>
 
-            <div style={{ width: '100%', height: '1px', backgroundColor: 'rgba(255, 255, 255, 0.08)' }} />
+            <div style={{ width: '100%', height: '1px', backgroundColor: 'rgba(15, 23, 42, 0.08)' }} />
 
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.7)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '12px', color: 'rgba(15, 23, 42, 0.7)', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <PaintBucket size={14} color="#a855f7" /> Fill Shape
               </span>
               <input 

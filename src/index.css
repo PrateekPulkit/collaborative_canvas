@@ -2,13 +2,13 @@
 
 :root {
   --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --bg-color: #0d0d12;
-  --fg-color: #f3f4f6;
+  --bg-color: #ffffff;
+  --fg-color: #0f172a;
   --accent-color: #a855f7;
-  --accent-glow: rgba(168, 85, 247, 0.4);
-  --glass-bg: rgba(20, 20, 30, 0.65);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-shadow: rgba(0, 0, 0, 0.4) 0 8px 32px 0;
+  --accent-glow: rgba(168, 85, 247, 0.25);
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(15, 23, 42, 0.08);
+  --glass-shadow: rgba(15, 23, 42, 0.05) 0 8px 32px 0;
 }
 
 * {

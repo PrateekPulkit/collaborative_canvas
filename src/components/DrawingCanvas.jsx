@@ -18,7 +18,8 @@ import {
   Users,
   Copy,
   Check,
-  ChevronRight
+  ChevronRight,
+  Sliders
 } from 'lucide-react';
 import { screenToCanvas, calculateZoomPan } from '../utils/canvasMath';
 import { isPointOnElement, getHitResizeHandle, getElementBoundingBox } from '../utils/hitTest';
@@ -56,6 +57,7 @@ export default function DrawingCanvas() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [activeTool, setActiveTool] = useState('pen'); // 'select' | 'pen' | 'line' | 'arrow' | 'rect' | 'circle' | 'text'
   const [showGrid, setShowGrid] = useState(true);
+  const [showStylePanel, setShowStylePanel] = useState(false);
   
   // Element states
   const [elements, setElements] = useState([]);
@@ -475,7 +477,7 @@ export default function DrawingCanvas() {
     };
   };
 
-  // Mouse / Touch Event Handlers
+  // Mouse Handlers
   const handleMouseDown = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -530,7 +532,7 @@ export default function DrawingCanvas() {
         strokeWidth
       });
     } else if (activeTool === 'text') {
-      e.preventDefault(); // Prevents focus theft so text editor stays open
+      e.preventDefault(); 
       const textId = `text-${Date.now()}`;
       const newText = {
         id: textId,
@@ -542,7 +544,7 @@ export default function DrawingCanvas() {
         strokeWidth
       };
       const nextElements = [...elements, newText];
-      pushToHistory(nextElements); // Pre-save container to history
+      pushToHistory(nextElements); 
       setEditingText(newText);
       setSelectedElementId(textId);
       setIsDrawing(false);
@@ -573,7 +575,6 @@ export default function DrawingCanvas() {
         x: e.clientX - panStart.current.x,
         y: e.clientY - panStart.current.y
       });
-      // Broadcast local cursor coordinate
       sendCursorMove(rawCoords);
       return;
     }
@@ -749,6 +750,52 @@ export default function DrawingCanvas() {
       setCurrentElement(null);
     }
   };
+
+  // Mobile Touch Wrappers
+  const handleTouchStart = (e) => {
+    if (e.touches.length === 1) {
+      const touch = e.touches[0];
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      
+      // Calculate viewport offset
+      const rect = canvas.getBoundingClientRect();
+      const clientX = touch.clientX - rect.left;
+      const clientY = touch.clientY - rect.top;
+      
+      const mouseEvent = {
+        clientX,
+        clientY,
+        shiftKey: e.shiftKey,
+        button: 0
+      };
+      
+      handleMouseDown(mouseEvent);
+    }
+  };
+
+  const handleTouchMove = (e) => {
+    if (e.touches.length === 1) {
+      const touch = e.touches[0];
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      
+      const rect = canvas.getBoundingClientRect();
+      const clientX = touch.clientX - rect.left;
+      const clientY = touch.clientY - rect.top;
+      
+      const mouseEvent = {
+        clientX,
+        clientY
+      };
+      
+      handleMouseMove(mouseEvent);
+    }
+  };
+
+  const handleTouchEnd = (e) => {
+    handleMouseUp();
+  };
   
   // Zoom centered on cursor
   const handleWheel = (e) => {
@@ -782,7 +829,6 @@ export default function DrawingCanvas() {
 
   // Copy shareable invitation URL link to clipboard
   const handleCopyInviteLink = () => {
-    // Generate clean link using URL query params
     const inviteUrl = `${window.location.protocol}//${window.location.host}${window.location.pathname}?room=${roomId}`;
     navigator.clipboard.writeText(inviteUrl);
     setCopyFeedback(true);
@@ -875,11 +921,15 @@ export default function DrawingCanvas() {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
         onWheel={handleWheel}
         onContextMenu={handleContextMenu}
         style={{
           display: 'block',
-          cursor: isPanning ? 'grabbing' : activeTool === 'select' ? 'default' : 'crosshair'
+          cursor: isPanning ? 'grabbing' : activeTool === 'select' ? 'default' : 'crosshair',
+          touchAction: 'none' // Prevents default pinch-zoom or scrolling behaviors on mobile
         }}
       />
       
@@ -939,24 +989,9 @@ export default function DrawingCanvas() {
       <div className="hud-layer" style={{ pointerEvents: 'none', position: 'absolute', inset: 0 }}>
         
         {/* Top Header - App Title, Room Sharing, and Collab Stats */}
-        <div style={{
-          position: 'absolute',
-          top: '20px',
-          left: '20px',
-          right: '20px',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          pointerEvents: 'auto'
-        }}>
+        <div className="canvas-header">
           {/* Left panel: App Name */}
-          <div className="glass-panel" style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            padding: '10px 18px',
-            borderRadius: '12px',
-          }}>
+          <div className="glass-panel canvas-header-left">
             <Sparkles size={20} color="#a855f7" className="pulse-animation" />
             <div>
               <h1 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold', color: '#fff', letterSpacing: '0.5px' }}>
@@ -967,7 +1002,7 @@ export default function DrawingCanvas() {
           </div>
           
           {/* Center-Right panels: Room Code display, Link copy, and Join inputs */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div className="canvas-header-right">
             
             {/* Share / Invite Link badge */}
             <div className="glass-panel" style={{
@@ -1018,7 +1053,7 @@ export default function DrawingCanvas() {
                   color: '#fff',
                   fontSize: '12px',
                   outline: 'none',
-                  width: '120px',
+                  width: '100px',
                   fontFamily: 'inherit'
                 }}
               />
@@ -1104,16 +1139,7 @@ export default function DrawingCanvas() {
         </div>
 
         {/* Center-Bottom Floating Toolbar */}
-        <div style={{
-          position: 'absolute',
-          bottom: '30px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '12px',
-          pointerEvents: 'auto'
-        }}>
+        <div className="bottom-toolbar-container">
           <div className="glass-panel toolbar" style={{
             display: 'flex',
             alignItems: 'center',
@@ -1244,6 +1270,15 @@ export default function DrawingCanvas() {
               <Grid size={18} />
             </button>
             
+            {/* Mobile collapsible style settings button */}
+            <button 
+              className={`tool-btn ${showStylePanel ? 'active' : ''}`}
+              onClick={() => setShowStylePanel(!showStylePanel)}
+              title="Brush & Fill Settings"
+            >
+              <Sliders size={18} />
+            </button>
+            
             <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.1)' }} />
             
             {/* Undo / Redo controls */}
@@ -1332,12 +1367,7 @@ export default function DrawingCanvas() {
         </div>
 
         {/* Sidebar Controls - Brush and Style settings */}
-        <div style={{
-          position: 'absolute',
-          left: '20px',
-          top: '90px',
-          pointerEvents: 'auto'
-        }}>
+        <div className={`sidebar-container ${showStylePanel ? 'open' : ''}`}>
           <div className="glass-panel" style={{
             padding: '16px',
             borderRadius: '16px',

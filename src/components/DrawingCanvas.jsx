@@ -72,7 +72,8 @@ export default function DrawingCanvas() {
     sendElementDeleted,
     sendCursorMove,
     sendEmojiReaction,
-    sendBoardSync
+    sendBoardSync,
+    clearActiveDrawElement
   } = useCollaboration(elements, setElements, pan, zoom);
 
   // Interaction states
@@ -187,17 +188,25 @@ export default function DrawingCanvas() {
     ctx.translate(pan.x, pan.y);
     ctx.scale(zoom, zoom);
     
-    // Draw elements
+    // 1. Draw completed elements
     elements.forEach(element => {
       if (editingText && editingText.id === element.id) return;
       drawElement(ctx, element);
     });
     
+    // 2. Draw other users' active, in-progress shapes
+    Object.values(collaborators).forEach(collab => {
+      if (collab.name !== myUsername && collab.activeDrawElement) {
+        drawElement(ctx, collab.activeDrawElement);
+      }
+    });
+
+    // 3. Draw local active drawing element
     if (currentElement) {
       drawElement(ctx, currentElement);
     }
     
-    // Selection outline & handles
+    // 4. Draw selection outline & handles
     if (selectedElementId && !editingText) {
       const selectedEl = elements.find(el => el.id === selectedElementId);
       if (selectedEl) {
@@ -205,7 +214,7 @@ export default function DrawingCanvas() {
       }
     }
     
-    // Collaborator cursors
+    // 5. Draw other users' cursors and avatars
     Object.values(collaborators).forEach(collab => {
       if (collab.name === myUsername) return;
       drawCollaboratorCursor(ctx, collab);
@@ -548,14 +557,13 @@ export default function DrawingCanvas() {
     
     const rawCoords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
     
-    // Broadcast local cursor coordinate
-    sendCursorMove(rawCoords);
-    
     if (isPanning) {
       setPan({
         x: e.clientX - panStart.current.x,
         y: e.clientY - panStart.current.y
       });
+      // Broadcast local cursor coordinate
+      sendCursorMove(rawCoords);
       return;
     }
     
@@ -607,6 +615,7 @@ export default function DrawingCanvas() {
         
         updateElement(selectedElementId, { points: updatedPoints });
         sendElementUpdated(selectedElementId, { points: updatedPoints });
+        sendCursorMove(rawCoords, { ...element, points: updatedPoints });
         return;
       }
 
@@ -641,6 +650,7 @@ export default function DrawingCanvas() {
       
       updateElement(selectedElementId, updates);
       sendElementUpdated(selectedElementId, updates);
+      sendCursorMove(rawCoords, { ...element, ...updates });
       return;
     }
     
@@ -671,34 +681,31 @@ export default function DrawingCanvas() {
       
       updateElement(selectedElementId, updates);
       sendElementUpdated(selectedElementId, updates);
+      sendCursorMove(rawCoords, { ...element, ...updates });
       return;
     }
     
-    if (!isDrawing || !currentElement) return;
+    // Handle local drawing and broadcast details on-the-fly
+    if (!isDrawing || !currentElement) {
+      sendCursorMove(rawCoords);
+      return;
+    }
     
     const coords = ['line', 'arrow', 'rect', 'circle'].includes(activeTool) ? snapCoords(rawCoords) : rawCoords;
-    
+    let nextActiveElement = null;
+
     if (activeTool === 'pen') {
-      setCurrentElement(prev => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          points: [...prev.points, coords]
-        };
-      });
+      const updatedPoints = [...currentElement.points, coords];
+      nextActiveElement = { ...currentElement, points: updatedPoints };
+      setCurrentElement(nextActiveElement);
     } else if (['line', 'arrow', 'rect', 'circle'].includes(activeTool)) {
       const width = coords.x - dragStart.current.x;
       const height = coords.y - dragStart.current.y;
-      
-      setCurrentElement(prev => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          width,
-          height
-        };
-      });
+      nextActiveElement = { ...currentElement, width, height };
+      setCurrentElement(nextActiveElement);
     }
+
+    sendCursorMove(rawCoords, nextActiveElement);
   };
   
   const handleMouseUp = () => {
@@ -711,12 +718,14 @@ export default function DrawingCanvas() {
       setActiveResizeHandle(null);
       resizeStartBbox.current = null;
       pushToHistory(elements); 
+      clearActiveDrawElement();
       return;
     }
     
     if (isMoving) {
       setIsMoving(false);
       pushToHistory(elements); 
+      clearActiveDrawElement();
       return;
     }
     
@@ -725,6 +734,7 @@ export default function DrawingCanvas() {
       const nextElements = [...elements, currentElement];
       pushToHistory(nextElements); 
       sendElementAdded(currentElement);
+      clearActiveDrawElement();
       setCurrentElement(null);
     }
   };

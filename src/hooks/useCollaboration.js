@@ -85,6 +85,7 @@ export function useCollaboration(elements, setElements, pan, zoom) {
             cursor: state.user.cursor,
             emoji: state.user.emoji,
             emojiTime: state.user.emojiTime,
+            activeDrawElement: state.user.activeDrawElement,
             isSimulated: false
           };
         }
@@ -113,7 +114,6 @@ export function useCollaboration(elements, setElements, pan, zoom) {
     const index = elementsArr.findIndex(el => el.id === id);
     if (index !== -1) {
       const currentVal = elementsArr[index];
-      // Atomic transaction update
       yDocRef.current.transact(() => {
         yElementsRef.current.delete(index, 1);
         yElementsRef.current.insert(index, [{ ...currentVal, ...updates }]);
@@ -134,7 +134,6 @@ export function useCollaboration(elements, setElements, pan, zoom) {
   const sendBoardSync = (allElements) => {
     if (isSyncingFromYjs.current || !yElementsRef.current) return;
     
-    // Clear and push elements atomically
     yDocRef.current.transact(() => {
       yElementsRef.current.delete(0, yElementsRef.current.length);
       if (allElements.length > 0) {
@@ -143,7 +142,7 @@ export function useCollaboration(elements, setElements, pan, zoom) {
     });
   };
   
-  const sendCursorMove = (coords) => {
+  const sendCursorMove = (coords, currentElement = null) => {
     if (!providerRef.current) return;
     const awareness = providerRef.current.awareness;
     const localState = awareness.getLocalState();
@@ -151,7 +150,21 @@ export function useCollaboration(elements, setElements, pan, zoom) {
     if (localState && localState.user) {
       awareness.setLocalStateField('user', {
         ...localState.user,
-        cursor: coords
+        cursor: coords,
+        activeDrawElement: currentElement
+      });
+    }
+  };
+
+  const clearActiveDrawElement = () => {
+    if (!providerRef.current) return;
+    const awareness = providerRef.current.awareness;
+    const localState = awareness.getLocalState();
+    
+    if (localState && localState.user) {
+      awareness.setLocalStateField('user', {
+        ...localState.user,
+        activeDrawElement: null
       });
     }
   };
@@ -332,6 +345,7 @@ export function useCollaboration(elements, setElements, pan, zoom) {
     sendElementDeleted,
     sendCursorMove,
     sendEmojiReaction,
-    sendBoardSync
+    sendBoardSync,
+    clearActiveDrawElement
   };
 }

@@ -2,6 +2,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   MousePointer, 
   PenTool, 
+  Minus, 
+  ArrowUpRight, 
+  Square, 
+  Circle as CircleIcon, 
   Eraser, 
   Undo2, 
   Redo2, 
@@ -9,9 +13,18 @@ import {
   Grid, 
   Sparkles,
   Maximize2,
-  Minimize2
+  PaintBucket
 } from 'lucide-react';
 import { screenToCanvas, calculateZoomPan } from '../utils/canvasMath';
+
+// Helper to convert hex to semi-transparent RGBA for shape fills
+function hexToRgba(hex, alpha = 0.15) {
+  if (!hex || !hex.startsWith('#')) return hex;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
 
 export default function DrawingCanvas() {
   const canvasRef = useRef(null);
@@ -20,7 +33,7 @@ export default function DrawingCanvas() {
   // Viewport state
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [activeTool, setActiveTool] = useState('pen'); // 'select' | 'pen' | 'eraser'
+  const [activeTool, setActiveTool] = useState('pen'); // 'select' | 'pen' | 'line' | 'arrow' | 'rect' | 'circle'
   const [showGrid, setShowGrid] = useState(true);
   
   // Element states
@@ -31,10 +44,12 @@ export default function DrawingCanvas() {
   const [isDrawing, setIsDrawing] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef({ x: 0, y: 0 });
+  const dragStart = useRef({ x: 0, y: 0 });
   
   // Custom styles state
   const [strokeColor, setStrokeColor] = useState('#a855f7'); // Neon purple
   const [strokeWidth, setStrokeWidth] = useState(3);
+  const [fillEnabled, setFillEnabled] = useState(true);
   
   // Handle canvas sizing
   useEffect(() => {
@@ -121,34 +136,111 @@ export default function DrawingCanvas() {
   
   // Render individual canvas element
   const drawElement = (ctx, element) => {
-    if (element.type === 'pen' && element.points && element.points.length > 0) {
-      ctx.save();
-      ctx.strokeStyle = element.strokeColor;
-      ctx.lineWidth = element.strokeWidth;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      
-      const pts = element.points;
-      if (pts.length < 2) {
+    ctx.save();
+    ctx.strokeStyle = element.strokeColor;
+    ctx.lineWidth = element.strokeWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    
+    // Handle dashed/dotted patterns
+    if (element.dashPattern === 'dashed') {
+      ctx.setLineDash([12, 8]);
+    } else if (element.dashPattern === 'dotted') {
+      ctx.setLineDash([2, 6]);
+    } else {
+      ctx.setLineDash([]);
+    }
+
+    switch (element.type) {
+      case 'pen':
+        if (element.points && element.points.length > 0) {
+          const pts = element.points;
+          if (pts.length < 2) {
+            ctx.beginPath();
+            ctx.arc(pts[0].x, pts[0].y, element.strokeWidth / 2, 0, 2 * Math.PI);
+            ctx.fillStyle = element.strokeColor;
+            ctx.fill();
+          } else {
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x, pts[0].y);
+            // Quadratic curve interpolation for smooth freehand drawing
+            for (let i = 1; i < pts.length - 1; i++) {
+              const xc = (pts[i].x + pts[i + 1].x) / 2;
+              const yc = (pts[i].y + pts[i + 1].y) / 2;
+              ctx.quadraticCurveTo(pts[i].x, pts[i].y, xc, yc);
+            }
+            ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+            ctx.stroke();
+          }
+        }
+        break;
+
+      case 'line':
         ctx.beginPath();
-        ctx.arc(pts[0].x, pts[0].y, element.strokeWidth / 2, 0, 2 * Math.PI);
+        ctx.moveTo(element.x, element.y);
+        ctx.lineTo(element.x + element.width, element.y + element.height);
+        ctx.stroke();
+        break;
+
+      case 'arrow':
+        ctx.beginPath();
+        ctx.moveTo(element.x, element.y);
+        const endX = element.x + element.width;
+        const endY = element.y + element.height;
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+        
+        // Draw Arrowhead
+        const angle = Math.atan2(element.height, element.width);
+        const arrowLength = Math.max(12, element.strokeWidth * 3.5);
+        const arrowAngle = Math.PI / 6; // 30 degrees
+        
+        // Solid arrowhead drawing (removes dashes for head)
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(endX, endY);
+        ctx.lineTo(
+          endX - arrowLength * Math.cos(angle - arrowAngle),
+          endY - arrowLength * Math.sin(angle - arrowAngle)
+        );
+        ctx.lineTo(
+          endX - arrowLength * Math.cos(angle + arrowAngle),
+          endY - arrowLength * Math.sin(angle + arrowAngle)
+        );
+        ctx.closePath();
         ctx.fillStyle = element.strokeColor;
         ctx.fill();
-      } else {
+        break;
+
+      case 'rect':
         ctx.beginPath();
-        ctx.moveTo(pts[0].x, pts[0].y);
-        
-        // Quadratic curve interpolation for smooth freehand drawing
-        for (let i = 1; i < pts.length - 1; i++) {
-          const xc = (pts[i].x + pts[i + 1].x) / 2;
-          const yc = (pts[i].y + pts[i + 1].y) / 2;
-          ctx.quadraticCurveTo(pts[i].x, pts[i].y, xc, yc);
+        ctx.rect(element.x, element.y, element.width, element.height);
+        if (element.fillColor) {
+          ctx.fillStyle = element.fillColor;
+          ctx.fill();
         }
-        ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
         ctx.stroke();
-      }
-      ctx.restore();
+        break;
+
+      case 'circle':
+        ctx.beginPath();
+        const rx = Math.abs(element.width / 2);
+        const ry = Math.abs(element.height / 2);
+        const cx = element.x + element.width / 2;
+        const cy = element.y + element.height / 2;
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
+        if (element.fillColor) {
+          ctx.fillStyle = element.fillColor;
+          ctx.fill();
+        }
+        ctx.stroke();
+        break;
+
+      default:
+        break;
     }
+    
+    ctx.restore();
   };
   
   // Mouse / Touch Event Handlers
@@ -156,26 +248,40 @@ export default function DrawingCanvas() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     
-    // Check if middle click or Space key is pressed (for Panning)
+    // Check if middle click or Shift key is pressed (for Panning)
     const isMiddleClick = e.button === 1;
-    const isSpacePressed = e.shiftKey; // Fallback helper if space key is awkward
+    const isSpaceOrShift = e.shiftKey;
     
-    if (isMiddleClick || isSpacePressed || activeTool === 'select') {
+    if (isMiddleClick || isSpaceOrShift || activeTool === 'select') {
       setIsPanning(true);
       panStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
       return;
     }
     
+    const coords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
+    dragStart.current = coords;
+    setIsDrawing(true);
+    
     if (activeTool === 'pen') {
-      setIsDrawing(true);
-      const coords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
-      
       setCurrentElement({
         id: `pen-${Date.now()}`,
         type: 'pen',
         points: [coords],
         strokeColor,
         strokeWidth
+      });
+    } else if (['line', 'arrow', 'rect', 'circle'].includes(activeTool)) {
+      setCurrentElement({
+        id: `${activeTool}-${Date.now()}`,
+        type: activeTool,
+        x: coords.x,
+        y: coords.y,
+        width: 0,
+        height: 0,
+        strokeColor,
+        strokeWidth,
+        fillColor: fillEnabled ? hexToRgba(strokeColor, 0.15) : null,
+        dashPattern: 'solid'
       });
     }
   };
@@ -192,14 +298,28 @@ export default function DrawingCanvas() {
       return;
     }
     
-    if (isDrawing && currentElement && activeTool === 'pen') {
-      const coords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
-      
+    if (!isDrawing || !currentElement) return;
+    
+    const coords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
+    
+    if (activeTool === 'pen') {
       setCurrentElement(prev => {
         if (!prev) return null;
         return {
           ...prev,
           points: [...prev.points, coords]
+        };
+      });
+    } else if (['line', 'arrow', 'rect', 'circle'].includes(activeTool)) {
+      const width = coords.x - dragStart.current.x;
+      const height = coords.y - dragStart.current.y;
+      
+      setCurrentElement(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          width,
+          height
         };
       });
     }
@@ -262,7 +382,7 @@ export default function DrawingCanvas() {
         onContextMenu={handleContextMenu}
         style={{
           display: 'block',
-          cursor: isPanning ? 'grabbing' : activeTool === 'pen' ? 'crosshair' : 'default'
+          cursor: isPanning ? 'grabbing' : activeTool === 'pen' ? 'crosshair' : ['line', 'arrow', 'rect', 'circle'].includes(activeTool) ? 'crosshair' : 'default'
         }}
       />
       
@@ -341,6 +461,34 @@ export default function DrawingCanvas() {
               <PenTool size={18} />
             </button>
             <button 
+              className={`tool-btn ${activeTool === 'line' ? 'active' : ''}`}
+              onClick={() => setActiveTool('line')}
+              title="Straight Line"
+            >
+              <Minus size={18} />
+            </button>
+            <button 
+              className={`tool-btn ${activeTool === 'arrow' ? 'active' : ''}`}
+              onClick={() => setActiveTool('arrow')}
+              title="Arrow"
+            >
+              <ArrowUpRight size={18} />
+            </button>
+            <button 
+              className={`tool-btn ${activeTool === 'rect' ? 'active' : ''}`}
+              onClick={() => setActiveTool('rect')}
+              title="Rectangle"
+            >
+              <Square size={18} />
+            </button>
+            <button 
+              className={`tool-btn ${activeTool === 'circle' ? 'active' : ''}`}
+              onClick={() => setActiveTool('circle')}
+              title="Circle / Ellipse"
+            >
+              <CircleIcon size={18} />
+            </button>
+            <button 
               className={`tool-btn ${activeTool === 'eraser' ? 'active' : ''}`}
               onClick={() => setActiveTool('eraser')}
               title="Eraser (Soon)"
@@ -412,7 +560,7 @@ export default function DrawingCanvas() {
           </div>
         </div>
 
-        {/* Sidebar Controls - Brush settings */}
+        {/* Sidebar Controls - Brush and Style settings */}
         <div style={{
           position: 'absolute',
           left: '20px',
@@ -424,13 +572,13 @@ export default function DrawingCanvas() {
             borderRadius: '16px',
             display: 'flex',
             flexDirection: 'column',
-            gap: '12px',
-            width: '160px'
+            gap: '14px',
+            width: '180px'
           }}>
-            <span style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(255, 255, 255, 0.4)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Brush Settings</span>
+            <span style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(255, 255, 255, 0.4)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Element Styling</span>
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <span style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.7)' }}>Size: {strokeWidth}px</span>
+              <span style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.7)' }}>Thickness: {strokeWidth}px</span>
               <input 
                 type="range" 
                 min="1" 
@@ -440,6 +588,25 @@ export default function DrawingCanvas() {
                 style={{
                   width: '100%',
                   accentColor: '#a855f7',
+                  cursor: 'pointer'
+                }}
+              />
+            </div>
+
+            <div style={{ width: '100%', height: '1px', backgroundColor: 'rgba(255, 255, 255, 0.08)' }} />
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: '12px', color: 'rgba(255, 255, 255, 0.7)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <PaintBucket size={14} color="#a855f7" /> Fill Shape
+              </span>
+              <input 
+                type="checkbox" 
+                checked={fillEnabled} 
+                onChange={(e) => setFillEnabled(e.target.checked)}
+                style={{
+                  accentColor: '#a855f7',
+                  width: '16px',
+                  height: '16px',
                   cursor: 'pointer'
                 }}
               />

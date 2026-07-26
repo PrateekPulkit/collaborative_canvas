@@ -189,8 +189,11 @@ if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
   console.log('Serving static files from', distPath);
   
-  // SPA routing: redirect unmatched API/WebSocket calls to index.html
-  app.get('/*', (req, res, next) => {
+  // SPA routing: redirect unmatched API/WebSocket GET calls to index.html
+  app.use((req, res, next) => {
+    if (req.method !== 'GET') {
+      return next();
+    }
     if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) {
       return next();
     }

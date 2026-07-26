@@ -176,6 +176,16 @@ export function useCollaboration(elements, setElements, pan, zoom) {
       });
     }
   };
+
+  const sendBoardSync = (allElements) => {
+    if (channelRef.current) {
+      channelRef.current.postMessage({
+        type: 'elements-sync',
+        from: myUsername.current,
+        data: { elements: allElements }
+      });
+    }
+  };
   
   // 3. Helper to show temporary emoji reactions floating from cursor
   const triggerFloatingEmoji = (username, emoji) => {
@@ -372,6 +382,7 @@ export function useCollaboration(elements, setElements, pan, zoom) {
     sendElementUpdated,
     sendElementDeleted,
     sendCursorMove,
-    sendEmojiReaction
+    sendEmojiReaction,
+    sendBoardSync
   };
 }

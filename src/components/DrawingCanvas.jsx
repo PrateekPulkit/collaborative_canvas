@@ -15,12 +15,12 @@ import {
   Maximize2,
   PaintBucket,
   Trash2,
-  Users,
-  Smile
+  Users
 } from 'lucide-react';
 import { screenToCanvas, calculateZoomPan } from '../utils/canvasMath';
 import { isPointOnElement, getHitResizeHandle, getElementBoundingBox } from '../utils/hitTest';
 import { useCollaboration } from '../hooks/useCollaboration';
+import { exportToPng, exportToSvg, exportToJson } from '../utils/export';
 
 // Helper to convert hex to semi-transparent RGBA for shape fills
 function hexToRgba(hex, alpha = 0.15) {
@@ -47,6 +47,13 @@ export default function DrawingCanvas() {
   const [selectedElementId, setSelectedElementId] = useState(null);
   const [editingText, setEditingText] = useState(null); // { id, x, y, text }
   
+  // History Undo/Redo state
+  const [history, setHistory] = useState([[]]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  
+  // Export overlay state
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  
   // Collaboration Hook
   const {
     collaborators,
@@ -58,7 +65,8 @@ export default function DrawingCanvas() {
     sendElementUpdated,
     sendElementDeleted,
     sendCursorMove,
-    sendEmojiReaction
+    sendEmojiReaction,
+    sendBoardSync
   } = useCollaboration(elements, setElements, pan, zoom);
 
   // Interaction states
@@ -76,21 +84,63 @@ export default function DrawingCanvas() {
   const [strokeWidth, setStrokeWidth] = useState(3);
   const [fillEnabled, setFillEnabled] = useState(true);
   
-  // Handle keyboard deletes
+  // History helper
+  const pushToHistory = (newElements) => {
+    const nextHistory = history.slice(0, historyIndex + 1);
+    setHistory([...nextHistory, newElements]);
+    setHistoryIndex(nextHistory.length);
+    setElements(newElements);
+  };
+  
+  const undo = () => {
+    if (historyIndex > 0) {
+      const prevElements = history[historyIndex - 1];
+      setHistoryIndex(historyIndex - 1);
+      setElements(prevElements);
+      sendBoardSync(prevElements);
+      setSelectedElementId(null);
+    }
+  };
+  
+  const redo = () => {
+    if (historyIndex < history.length - 1) {
+      const nextElements = history[historyIndex + 1];
+      setHistoryIndex(historyIndex + 1);
+      setElements(nextElements);
+      sendBoardSync(nextElements);
+      setSelectedElementId(null);
+    }
+  };
+
+  // Keyboard Event Handler
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (editingText) return; // Ignore hotkeys during text editing
+      if (editingText) return; 
       
+      // Delete selected element
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedElementId) {
-        setElements(prev => prev.filter(el => el.id !== selectedElementId));
+        const nextElements = elements.filter(el => el.id !== selectedElementId);
+        pushToHistory(nextElements);
         sendElementDeleted(selectedElementId);
         setSelectedElementId(null);
+      }
+      
+      // Undo command (Ctrl+Z)
+      if (e.key === 'z' && e.ctrlKey) {
+        e.preventDefault();
+        undo();
+      }
+      
+      // Redo command (Ctrl+Y or Ctrl+Shift+Z)
+      if (e.key === 'y' && e.ctrlKey) {
+        e.preventDefault();
+        redo();
       }
     };
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedElementId, editingText]);
+  }, [selectedElementId, editingText, elements, historyIndex, history]);
 
   // Handle canvas sizing
   useEffect(() => {
@@ -109,7 +159,7 @@ export default function DrawingCanvas() {
     return () => window.removeEventListener('resize', handleResize);
   }, [elements, currentElement, zoom, pan, showGrid, selectedElementId, editingText, collaborators]);
   
-  // Redraw canvas whenever elements, viewport, or collaborators change
+  // Redraw canvas on modifications
   useEffect(() => {
     draw();
   }, [elements, currentElement, zoom, pan, showGrid, selectedElementId, editingText, collaborators]);
@@ -121,31 +171,27 @@ export default function DrawingCanvas() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     
-    // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // 1. Draw Grid in viewport space
     if (showGrid) {
       drawGridBackground(ctx, canvas.width, canvas.height);
     }
     
-    // 2. Draw elements in canvas space
     ctx.save();
     ctx.translate(pan.x, pan.y);
     ctx.scale(zoom, zoom);
     
-    // Draw completed elements
+    // Draw elements
     elements.forEach(element => {
       if (editingText && editingText.id === element.id) return;
       drawElement(ctx, element);
     });
     
-    // Draw current active drawing element
     if (currentElement) {
       drawElement(ctx, currentElement);
     }
     
-    // Draw selection outline & handles
+    // Selection outline & handles
     if (selectedElementId && !editingText) {
       const selectedEl = elements.find(el => el.id === selectedElementId);
       if (selectedEl) {
@@ -153,7 +199,7 @@ export default function DrawingCanvas() {
       }
     }
     
-    // Draw other users' cursors and avatars
+    // Collaborator cursors
     Object.values(collaborators).forEach(collab => {
       if (collab.name === myUsername) return;
       drawCollaboratorCursor(ctx, collab);
@@ -350,7 +396,6 @@ export default function DrawingCanvas() {
     
     ctx.save();
     
-    // Draw cursor arrow
     ctx.fillStyle = collab.color;
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -359,7 +404,6 @@ export default function DrawingCanvas() {
     ctx.closePath();
     ctx.fill();
     
-    // Draw name label
     const fontSize = 10 / zoom;
     ctx.font = `bold ${fontSize}px Outfit, sans-serif`;
     const paddingX = 6 / zoom;
@@ -373,7 +417,6 @@ export default function DrawingCanvas() {
     
     ctx.fillStyle = collab.color;
     ctx.beginPath();
-    // Using simple round rectangle draw compatibility
     if (ctx.roundRect) {
       ctx.roundRect(rx, ry, rw, rh, 4 / zoom);
     } else {
@@ -381,16 +424,29 @@ export default function DrawingCanvas() {
     }
     ctx.fill();
     
-    ctx.fillStyle = '#0d0d12'; // High contrast text color on cursor label
+    ctx.fillStyle = '#0d0d12'; 
     ctx.fillText(collab.name, rx + paddingX, ry + paddingY);
     
-    // Draw floating emoji reaction
     if (collab.emoji) {
       ctx.font = `${22 / zoom}px Outfit, sans-serif`;
       ctx.fillText(collab.emoji, x + 8 / zoom, y - 10 / zoom);
     }
     
     ctx.restore();
+  };
+
+  // Helper to update elements by ID
+  const updateElement = (id, updates) => {
+    setElements(prev => prev.map(el => el.id === id ? { ...el, ...updates } : el));
+  };
+  
+  // Grid snapping helper
+  const snapCoords = (coords) => {
+    if (!showGrid) return coords;
+    return {
+      x: Math.round(coords.x / 40) * 40,
+      y: Math.round(coords.y / 40) * 40
+    };
   };
 
   // Mouse / Touch Event Handlers
@@ -407,14 +463,15 @@ export default function DrawingCanvas() {
       return;
     }
     
-    const coords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
+    const rawCoords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
+    const coords = ['line', 'arrow', 'rect', 'circle'].includes(activeTool) ? snapCoords(rawCoords) : rawCoords;
     dragStart.current = coords;
     
     if (activeTool === 'select') {
       if (selectedElementId) {
         const selectedEl = elements.find(el => el.id === selectedElementId);
         if (selectedEl) {
-          const handle = getHitResizeHandle(coords.x, coords.y, selectedEl, zoom);
+          const handle = getHitResizeHandle(rawCoords.x, rawCoords.y, selectedEl, zoom);
           if (handle) {
             setActiveResizeHandle(handle);
             resizeStartBbox.current = getElementBoundingBox(selectedEl);
@@ -425,7 +482,7 @@ export default function DrawingCanvas() {
       
       const clickedElement = [...elements]
         .reverse()
-        .find(el => isPointOnElement(coords.x, coords.y, el));
+        .find(el => isPointOnElement(rawCoords.x, rawCoords.y, el));
         
       if (clickedElement) {
         setSelectedElementId(clickedElement.id);
@@ -457,7 +514,8 @@ export default function DrawingCanvas() {
         strokeColor,
         strokeWidth
       };
-      setElements(prev => [...prev, newText]);
+      const nextElements = [...elements, newText];
+      pushToHistory(nextElements); // Pre-save container to history
       setEditingText(newText);
       setSelectedElementId(textId);
       setIsDrawing(false);
@@ -481,10 +539,10 @@ export default function DrawingCanvas() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     
-    const coords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
+    const rawCoords = screenToCanvas(e.clientX, e.clientY, canvas, pan, zoom);
     
-    // Broadcast local cursor position
-    sendCursorMove(coords);
+    // Broadcast local cursor coordinate
+    sendCursorMove(rawCoords);
     
     if (isPanning) {
       setPan({
@@ -501,6 +559,9 @@ export default function DrawingCanvas() {
       
       const bbox = resizeStartBbox.current;
       if (!bbox) return;
+      
+      // Snap coordinates for sizing
+      const coords = snapCoords(rawCoords);
       
       let newX = element.x;
       let newY = element.y;
@@ -582,9 +643,9 @@ export default function DrawingCanvas() {
       const element = elements.find(el => el.id === selectedElementId);
       if (!element) return;
       
-      const dx = coords.x - dragStart.current.x;
-      const dy = coords.y - dragStart.current.y;
-      dragStart.current = coords;
+      const dx = rawCoords.x - dragStart.current.x;
+      const dy = rawCoords.y - dragStart.current.y;
+      dragStart.current = rawCoords;
       
       let updates = {};
       if (element.type === 'pen') {
@@ -594,9 +655,11 @@ export default function DrawingCanvas() {
         }));
         updates = { points: shiftedPoints };
       } else {
+        const nextX = element.x + dx;
+        const nextY = element.y + dy;
         updates = {
-          x: element.x + dx,
-          y: element.y + dy
+          x: showGrid ? Math.round(nextX / 40) * 40 : nextX,
+          y: showGrid ? Math.round(nextY / 40) * 40 : nextY
         };
       }
       
@@ -607,7 +670,9 @@ export default function DrawingCanvas() {
     
     if (!isDrawing || !currentElement) return;
     
-    // Handle drawing in progress
+    // Handle drawing shape snap
+    const coords = ['line', 'arrow', 'rect', 'circle'].includes(activeTool) ? snapCoords(rawCoords) : rawCoords;
+    
     if (activeTool === 'pen') {
       setCurrentElement(prev => {
         if (!prev) return null;
@@ -640,23 +705,26 @@ export default function DrawingCanvas() {
     if (activeResizeHandle) {
       setActiveResizeHandle(null);
       resizeStartBbox.current = null;
+      pushToHistory(elements); // Save resized geometry to history
       return;
     }
     
     if (isMoving) {
       setIsMoving(false);
+      pushToHistory(elements); // Save final translation to history
       return;
     }
     
     if (isDrawing && currentElement) {
       setIsDrawing(false);
-      setElements(prev => [...prev, currentElement]);
-      sendElementAdded(currentElement); // Sync addition to others
+      const nextElements = [...elements, currentElement];
+      pushToHistory(nextElements); // Save additions to history
+      sendElementAdded(currentElement);
       setCurrentElement(null);
     }
   };
   
-  // Zoom on wheel (centered at mouse)
+  // Zoom centered on cursor
   const handleWheel = (e) => {
     e.preventDefault();
     const canvas = canvasRef.current;
@@ -672,21 +740,77 @@ export default function DrawingCanvas() {
     setPan(nextPan);
   };
   
-  // Prevent browser context menu on canvas (allows right-click gestures)
   const handleContextMenu = (e) => {
     e.preventDefault();
   };
 
-  // Delete selected item from button
+  // Delete element logic
   const deleteSelectedElement = () => {
     if (selectedElementId) {
-      setElements(prev => prev.filter(el => el.id !== selectedElementId));
+      const nextElements = elements.filter(el => el.id !== selectedElementId);
+      pushToHistory(nextElements);
       sendElementDeleted(selectedElementId);
       setSelectedElementId(null);
     }
   };
 
-  // List of simulated and real collaborators in session
+  // --- Export Handlers ---
+  const handleExportPng = () => {
+    const pngDataUrl = exportToPng(elements);
+    if (!pngDataUrl) return;
+    
+    const link = document.createElement('a');
+    link.download = 'flam-canvas-drawing.png';
+    link.href = pngDataUrl;
+    link.click();
+    setShowExportMenu(false);
+  };
+
+  const handleExportSvg = () => {
+    const svgString = exportToSvg(elements);
+    if (!svgString) return;
+    
+    const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement('a');
+    link.download = 'flam-canvas-drawing.svg';
+    link.href = url;
+    link.click();
+    
+    URL.revokeObjectURL(url);
+    setShowExportMenu(false);
+  };
+
+  const handleExportJson = () => {
+    const jsonUrl = exportToJson(elements);
+    const link = document.createElement('a');
+    link.download = 'flam-canvas-project.json';
+    link.href = jsonUrl;
+    link.click();
+    setShowExportMenu(false);
+  };
+
+  const handleImportJson = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const imported = JSON.parse(event.target.result);
+        if (Array.isArray(imported)) {
+          pushToHistory(imported);
+          sendBoardSync(imported);
+        }
+      } catch (err) {
+        console.error("Invalid JSON Project File", err);
+      }
+    };
+    reader.readAsText(file);
+    setShowExportMenu(false);
+  };
+
   const activeCollabList = Object.values(collaborators);
   
   return (
@@ -724,19 +848,16 @@ export default function DrawingCanvas() {
             const val = e.target.value;
             setEditingText(prev => ({ ...prev, text: val }));
             updateElement(editingText.id, { text: val });
-            sendElementUpdated(editingText.id, { text: val });
           }}
           onBlur={() => {
             if (!editingText.text.trim()) {
-              setElements(prev => prev.filter(el => el.id !== editingText.id));
+              const nextElements = elements.filter(el => el.id !== editingText.id);
+              pushToHistory(nextElements);
               sendElementDeleted(editingText.id);
               setSelectedElementId(null);
             } else {
-              // Final sync on save
-              const finalEl = elements.find(el => el.id === editingText.id);
-              if (finalEl) {
-                sendElementAdded(finalEl);
-              }
+              pushToHistory(elements);
+              sendBoardSync(elements);
             }
             setEditingText(null);
           }}
@@ -839,7 +960,6 @@ export default function DrawingCanvas() {
               gap: '8px'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', marginRight: '4px' }}>
-                {/* Local user badge */}
                 <div 
                   style={{
                     width: '24px',
@@ -860,7 +980,6 @@ export default function DrawingCanvas() {
                   ME
                 </div>
                 
-                {/* Other collaborators */}
                 {activeCollabList.map(c => (
                   <div 
                     key={c.name}
@@ -1028,21 +1147,41 @@ export default function DrawingCanvas() {
             <button 
               className={`tool-btn ${showGrid ? 'active' : ''}`}
               onClick={() => setShowGrid(!showGrid)}
-              title="Toggle Grid"
+              title="Toggle Grid / Snapping"
             >
               <Grid size={18} />
             </button>
             
             <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.1)' }} />
             
+            {/* Undo / Redo controls */}
+            <button 
+              className="tool-btn"
+              onClick={undo}
+              disabled={historyIndex <= 0}
+              title="Undo (Ctrl+Z)"
+            >
+              <Undo2 size={16} />
+            </button>
+            <button 
+              className="tool-btn"
+              onClick={redo}
+              disabled={historyIndex >= history.length - 1}
+              title="Redo (Ctrl+Y)"
+            >
+              <Redo2 size={16} />
+            </button>
+            
+            <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255, 255, 255, 0.1)' }} />
+
             <div style={{
               display: 'flex',
               alignItems: 'center',
-              padding: '0 8px',
+              padding: '0 4px',
               fontSize: '12px',
               color: 'rgba(255, 255, 255, 0.7)',
               fontWeight: 500,
-              minWidth: '45px',
+              minWidth: '40px',
               justifyContent: 'center'
             }}>
               {Math.round(zoom * 100)}%
@@ -1055,6 +1194,48 @@ export default function DrawingCanvas() {
             >
               <Maximize2 size={16} />
             </button>
+          </div>
+
+          {/* Export / Load Action Panel */}
+          <div style={{ position: 'relative' }}>
+            <div className="glass-panel" style={{
+              display: 'flex',
+              alignItems: 'center',
+              padding: '6px',
+              borderRadius: '16px'
+            }}>
+              <button 
+                className={`tool-btn ${showExportMenu ? 'active' : ''}`}
+                onClick={() => setShowExportMenu(!showExportMenu)}
+                title="Export / Import options"
+              >
+                <Download size={18} />
+              </button>
+            </div>
+
+            {showExportMenu && (
+              <div className="glass-panel" style={{
+                position: 'absolute',
+                bottom: '68px',
+                right: '0',
+                borderRadius: '12px',
+                padding: '6px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '2px',
+                width: '160px',
+                zIndex: 1000
+              }}>
+                <button className="dropdown-item" onClick={handleExportPng}>Export PNG</button>
+                <button className="dropdown-item" onClick={handleExportSvg}>Export SVG</button>
+                <button className="dropdown-item" onClick={handleExportJson}>Save Project (JSON)</button>
+                <div style={{ height: '1px', backgroundColor: 'rgba(255, 255, 255, 0.08)', margin: '4px 0' }} />
+                <label className="dropdown-item" style={{ cursor: 'pointer', display: 'block' }}>
+                  <span>Load Project...</span>
+                  <input type="file" accept=".json" onChange={handleImportJson} style={{ display: 'none' }} />
+                </label>
+              </div>
+            )}
           </div>
         </div>
 

@@ -4,6 +4,16 @@ import { useEffect, useState, useRef } from 'react';
 const NAMES = ['Sparky', 'Pixel', 'Vector', 'Curve', 'Dot', 'Matrix', 'Raster'];
 const COLORS = ['#ec4899', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#06b6d4'];
 
+// Helper to convert hex to semi-transparent RGBA for shape fills
+function hexToRgba(hex, alpha = 0.15) {
+  if (!hex || !hex.startsWith('#')) return hex;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+
 export function useCollaboration(elements, setElements, pan, zoom) {
   const [collaborators, setCollaborators] = useState({});
   const [simulationActive, setSimulationActive] = useState(true);

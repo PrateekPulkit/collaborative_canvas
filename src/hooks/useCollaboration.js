@@ -1,28 +1,27 @@
 import { useEffect, useState, useRef } from 'react';
-import * as Y from 'yjs';
-import { WebsocketProvider } from 'y-websocket';
+import { io } from 'socket.io-client';
 
 const NAMES = ['Sparky', 'Pixel', 'Vector', 'Curve', 'Dot', 'Matrix', 'Raster'];
 const COLORS = ['#ec4899', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#06b6d4'];
 
+const BACKEND_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  ? 'http://localhost:3001'
+  : window.location.origin; // In production, Node server serves frontend statically from same origin
+
 export function useCollaboration(elements, setElements, pan, zoom) {
   const [roomId, setRoomId] = useState('');
-  const [realCollaborators, setRealCollaborators] = useState({});
+  const [collaborators, setCollaborators] = useState({});
   
   // Local user profile details
   const myUsername = useRef(NAMES[Math.floor(Math.random() * NAMES.length)] + '-' + Math.floor(Math.random() * 100));
   const myColor = useRef(COLORS[Math.floor(Math.random() * COLORS.length)]);
   
-  // Keep Yjs instances in refs
-  const yDocRef = useRef(null);
-  const provider1Ref = useRef(null);
-  const provider2Ref = useRef(null);
-  const yElementsRef = useRef(null);
+  // Keep socket instance in refs
+  const socketRef = useRef(null);
   
-  // Internal flag to avoid update loops
-  const isSyncingFromYjs = useRef(false);
+  // Internal flag to avoid echo loops
+  const isSyncingFromSocket = useRef(false);
   
-  // 1. Initialize Room ID, Yjs Document, and WebSocket connection
   useEffect(() => {
     // Read or generate room code
     const params = new URLSearchParams(window.location.search);
@@ -41,7 +40,7 @@ export function useCollaboration(elements, setElements, pan, zoom) {
       }
     }
     
-    // Generate new room ID if none exists or if it resolved to empty
+    // Generate new room ID if none exists
     if (!rId || rId.trim() === '') {
       rId = Math.random().toString(36).substring(2, 8);
     }
@@ -51,205 +50,190 @@ export function useCollaboration(elements, setElements, pan, zoom) {
     window.history.replaceState({ path: newUrl }, '', newUrl);
     setRoomId(rId);
     
-    // Create Yjs doc
-    const doc = new Y.Doc();
-    yDocRef.current = doc;
+    let isMounted = true;
+    let socket = null;
     
-    const roomName = `flam-canvas-room-${rId}`;
-    
-    // Connect to BOTH wss://demos.yjs.dev and wss://y-websocket.fly.dev for multi-server redundancy
-    const provider1 = new WebsocketProvider('wss://demos.yjs.dev', roomName, doc);
-    provider1Ref.current = provider1;
-    
-    const provider2 = new WebsocketProvider('wss://y-websocket.fly.dev', roomName, doc);
-    provider2Ref.current = provider2;
-    
-    const yElements = doc.getArray('elements');
-    yElementsRef.current = yElements;
-    
-    // Initial fetch from Yjs array
-    setElements(yElements.toArray());
-    
-    // Explicit sync listeners to ensure React state updates on WebSocket sync events
-    provider1.on('sync', (isSynced) => {
-      if (isSynced) setElements(yElements.toArray());
-    });
-    provider2.on('sync', (isSynced) => {
-      if (isSynced) setElements(yElements.toArray());
-    });
-    
-    // Set local presence in Yjs awareness for both providers
-    const awareness1 = provider1.awareness;
-    const awareness2 = provider2.awareness;
-    
-    const initialPresence = {
-      name: myUsername.current,
-      color: myColor.current,
-      cursor: null,
-      emoji: null,
-      emojiTime: null
-    };
-    
-    awareness1.setLocalStateField('user', initialPresence);
-    awareness2.setLocalStateField('user', initialPresence);
-    
-    // Listen to shared array updates
-    yElements.observe(() => {
-      isSyncingFromYjs.current = true;
-      setElements(yElements.toArray());
-      isSyncingFromYjs.current = false;
-    });
-    
-    // Listen to network awareness changes (cursors, emoji reactions) across both providers
-    const handleAwarenessChange = () => {
-      const states1 = awareness1.getStates();
-      const states2 = awareness2.getStates();
-      const updatedCollabs = {};
-      
-      const parseStates = (states) => {
-        states.forEach((state) => {
-          if (state.user && state.user.name !== myUsername.current) {
-            updatedCollabs[state.user.name] = {
-              name: state.user.name,
-              color: state.user.color,
-              cursor: state.user.cursor,
-              emoji: state.user.emoji,
-              emojiTime: state.user.emojiTime,
-              activeDrawElement: state.user.activeDrawElement,
-              isSimulated: false
-            };
-          }
+    // Connect to Backend and handshake via JWT
+    async function connectSocket() {
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/join`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            roomId: rId,
+            username: myUsername.current
+          })
         });
-      };
-      
-      // Merge states from both networks
-      parseStates(states1);
-      parseStates(states2);
-      
-      setRealCollaborators(updatedCollabs);
-    };
+        
+        if (!response.ok) {
+          throw new Error('REST API failed to sign handshake token');
+        }
+        
+        const { token } = await response.json();
+        
+        if (!isMounted) return;
+        
+        // Connect Socket.io with JWT auth token
+        socket = io(BACKEND_URL, {
+          auth: { token },
+          transports: ['websocket', 'polling'] // fallback transport methods
+        });
+        socketRef.current = socket;
+        
+        // 1. Initial State load from SQLite
+        socket.on('init-state', (elementsArr) => {
+          isSyncingFromSocket.current = true;
+          setElements(elementsArr);
+          isSyncingFromSocket.current = false;
+        });
+        
+        // 2. Real-time draw sync events
+        socket.on('element-added', (element) => {
+          isSyncingFromSocket.current = true;
+          setElements(prev => [...prev, element]);
+          isSyncingFromSocket.current = false;
+        });
+        
+        socket.on('element-updated', ({ id, updates }) => {
+          isSyncingFromSocket.current = true;
+          setElements(prev => prev.map(el => el.id === id ? { ...el, ...updates } : el));
+          isSyncingFromSocket.current = false;
+        });
+        
+        socket.on('element-deleted', (id) => {
+          isSyncingFromSocket.current = true;
+          setElements(prev => prev.filter(el => el.id !== id));
+          isSyncingFromSocket.current = false;
+        });
+        
+        socket.on('board-sync', (allElements) => {
+          isSyncingFromSocket.current = true;
+          setElements(allElements);
+          isSyncingFromSocket.current = false;
+        });
+        
+        // 3. Real-time Awareness sync (cursors and reactions)
+        socket.on('cursor-move', ({ name, cursor }) => {
+          setCollaborators(prev => ({
+            ...prev,
+            [name]: {
+              ...prev[name],
+              name,
+              cursor,
+              // Keep color constant if remote user is active, fallback generate
+              color: prev[name]?.color || COLORS[Math.floor(Math.random() * COLORS.length)]
+            }
+          }));
+        });
+
+        socket.on('active-draw-move', ({ name, activeDrawElement }) => {
+          setCollaborators(prev => ({
+            ...prev,
+            [name]: {
+              ...prev[name],
+              name,
+              activeDrawElement,
+              color: prev[name]?.color || COLORS[Math.floor(Math.random() * COLORS.length)]
+            }
+          }));
+        });
+        
+        socket.on('emoji-reaction', ({ name, emoji, emojiTime }) => {
+          setCollaborators(prev => ({
+            ...prev,
+            [name]: {
+              ...prev[name],
+              name,
+              emoji,
+              emojiTime,
+              color: prev[name]?.color || COLORS[Math.floor(Math.random() * COLORS.length)]
+            }
+          }));
+          
+          // Clear emoji local presence bubble after 2 seconds
+          setTimeout(() => {
+            if (isMounted) {
+              setCollaborators(prev => {
+                if (prev[name] && prev[name].emoji === emoji) {
+                  return {
+                    ...prev,
+                    [name]: { ...prev[name], emoji: null }
+                  };
+                }
+                return prev;
+              });
+            }
+          }, 2000);
+        });
+        
+        socket.on('user-left', (username) => {
+          setCollaborators(prev => {
+            const copy = { ...prev };
+            delete copy[username];
+            return copy;
+          });
+        });
+        
+      } catch (err) {
+        console.error('Socket.io connection failed:', err.message);
+      }
+    }
     
-    awareness1.on('change', handleAwarenessChange);
-    awareness2.on('change', handleAwarenessChange);
+    connectSocket();
     
     return () => {
-      provider1.disconnect();
-      provider2.disconnect();
-      doc.destroy();
+      isMounted = false;
+      if (socket) {
+        socket.disconnect();
+      }
     };
   }, [setElements]);
   
-  // 2. Local APIs mapped to modify Yjs Shared Data (synced instantly across users)
+  // 4. API helpers called from the Drawing Canvas
   
   const sendElementAdded = (element) => {
-    if (isSyncingFromYjs.current || !yElementsRef.current) return;
-    yElementsRef.current.push([element]);
+    if (isSyncingFromSocket.current || !socketRef.current) return;
+    socketRef.current.emit('element-added', element);
   };
   
   const sendElementUpdated = (id, updates) => {
-    if (isSyncingFromYjs.current || !yElementsRef.current) return;
-    
-    const elementsArr = yElementsRef.current.toArray();
-    const index = elementsArr.findIndex(el => el.id === id);
-    if (index !== -1) {
-      const currentVal = elementsArr[index];
-      yDocRef.current.transact(() => {
-        yElementsRef.current.delete(index, 1);
-        yElementsRef.current.insert(index, [{ ...currentVal, ...updates }]);
-      });
-    }
+    if (isSyncingFromSocket.current || !socketRef.current) return;
+    socketRef.current.emit('element-updated', { id, updates });
   };
   
   const sendElementDeleted = (id) => {
-    if (isSyncingFromYjs.current || !yElementsRef.current) return;
-    
-    const elementsArr = yElementsRef.current.toArray();
-    const index = elementsArr.findIndex(el => el.id === id);
-    if (index !== -1) {
-      yElementsRef.current.delete(index, 1);
-    }
+    if (isSyncingFromSocket.current || !socketRef.current) return;
+    socketRef.current.emit('element-deleted', id);
   };
   
   const sendBoardSync = (allElements) => {
-    if (isSyncingFromYjs.current || !yElementsRef.current) return;
-    
-    yDocRef.current.transact(() => {
-      yElementsRef.current.delete(0, yElementsRef.current.length);
-      if (allElements.length > 0) {
-        yElementsRef.current.push(allElements);
-      }
-    });
+    if (isSyncingFromSocket.current || !socketRef.current) return;
+    socketRef.current.emit('board-sync', allElements);
   };
   
   const sendCursorMove = (coords, currentElement = null) => {
-    const updateAwareness = (providerRef) => {
-      if (!providerRef.current) return;
-      const awareness = providerRef.current.awareness;
-      const localState = awareness.getLocalState();
-      
-      if (localState && localState.user) {
-        awareness.setLocalStateField('user', {
-          ...localState.user,
-          cursor: coords,
-          activeDrawElement: currentElement
-        });
-      }
-    };
-    
-    updateAwareness(provider1Ref);
-    updateAwareness(provider2Ref);
+    if (!socketRef.current) return;
+    socketRef.current.emit('cursor-move', coords);
+    if (currentElement) {
+      socketRef.current.emit('active-draw-move', currentElement);
+    }
   };
 
   const clearActiveDrawElement = () => {
-    const clearAwareness = (providerRef) => {
-      if (!providerRef.current) return;
-      const awareness = providerRef.current.awareness;
-      const localState = awareness.getLocalState();
-      
-      if (localState && localState.user) {
-        awareness.setLocalStateField('user', {
-          ...localState.user,
-          activeDrawElement: null
-        });
-      }
-    };
-    
-    clearAwareness(provider1Ref);
-    clearAwareness(provider2Ref);
+    if (!socketRef.current) return;
+    socketRef.current.emit('active-draw-move', null);
   };
   
   const sendEmojiReaction = (emoji) => {
-    const updateEmoji = (providerRef) => {
-      if (!providerRef.current) return;
-      const awareness = providerRef.current.awareness;
-      const localState = awareness.getLocalState();
-      
-      if (localState && localState.user) {
-        awareness.setLocalStateField('user', {
-          ...localState.user,
-          emoji: emoji,
-          emojiTime: Date.now()
-        });
-        
-        setTimeout(() => {
-          const currentState = awareness.getLocalState();
-          if (currentState && currentState.user && currentState.user.emoji === emoji) {
-            awareness.setLocalStateField('user', {
-              ...currentState.user,
-              emoji: null
-            });
-          }
-        }, 2000);
-      }
-    };
-    
-    updateEmoji(provider1Ref);
-    updateEmoji(provider2Ref);
+    if (!socketRef.current) return;
+    socketRef.current.emit('emoji-reaction', emoji);
   };
   
   return {
     roomId,
-    collaborators: realCollaborators,
+    collaborators,
     myUsername: myUsername.current,
     myColor: myColor.current,
     sendElementAdded,

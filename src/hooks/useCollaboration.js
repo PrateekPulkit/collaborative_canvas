@@ -15,7 +15,8 @@ export function useCollaboration(elements, setElements, pan, zoom) {
   
   // Keep Yjs instances in refs
   const yDocRef = useRef(null);
-  const providerRef = useRef(null);
+  const provider1Ref = useRef(null);
+  const provider2Ref = useRef(null);
   const yElementsRef = useRef(null);
   
   // Internal flag to avoid update loops
@@ -50,25 +51,47 @@ export function useCollaboration(elements, setElements, pan, zoom) {
     window.history.replaceState({ path: newUrl }, '', newUrl);
     setRoomId(rId);
     
-    // Create Yjs doc and connect to public WebSocket relay
+    // Create Yjs doc
     const doc = new Y.Doc();
     yDocRef.current = doc;
     
-    const provider = new WebsocketProvider('wss://demos.yjs.dev', `flam-canvas-room-${rId}`, doc);
-    providerRef.current = provider;
+    const roomName = `flam-canvas-room-${rId}`;
+    
+    // Connect to BOTH wss://demos.yjs.dev and wss://y-websocket.fly.dev for multi-server redundancy
+    const provider1 = new WebsocketProvider('wss://demos.yjs.dev', roomName, doc);
+    provider1Ref.current = provider1;
+    
+    const provider2 = new WebsocketProvider('wss://y-websocket.fly.dev', roomName, doc);
+    provider2Ref.current = provider2;
     
     const yElements = doc.getArray('elements');
     yElementsRef.current = yElements;
     
-    // Set local presence in Yjs awareness
-    const awareness = provider.awareness;
-    awareness.setLocalStateField('user', {
+    // Initial fetch from Yjs array
+    setElements(yElements.toArray());
+    
+    // Explicit sync listeners to ensure React state updates on WebSocket sync events
+    provider1.on('sync', (isSynced) => {
+      if (isSynced) setElements(yElements.toArray());
+    });
+    provider2.on('sync', (isSynced) => {
+      if (isSynced) setElements(yElements.toArray());
+    });
+    
+    // Set local presence in Yjs awareness for both providers
+    const awareness1 = provider1.awareness;
+    const awareness2 = provider2.awareness;
+    
+    const initialPresence = {
       name: myUsername.current,
       color: myColor.current,
       cursor: null,
       emoji: null,
       emojiTime: null
-    });
+    };
+    
+    awareness1.setLocalStateField('user', initialPresence);
+    awareness2.setLocalStateField('user', initialPresence);
     
     // Listen to shared array updates
     yElements.observe(() => {
@@ -77,30 +100,41 @@ export function useCollaboration(elements, setElements, pan, zoom) {
       isSyncingFromYjs.current = false;
     });
     
-    // Listen to network awareness changes (cursors, emoji reactions)
-    awareness.on('change', () => {
-      const states = awareness.getStates();
+    // Listen to network awareness changes (cursors, emoji reactions) across both providers
+    const handleAwarenessChange = () => {
+      const states1 = awareness1.getStates();
+      const states2 = awareness2.getStates();
       const updatedCollabs = {};
       
-      states.forEach((state, clientID) => {
-        if (state.user && state.user.name !== myUsername.current) {
-          updatedCollabs[state.user.name] = {
-            name: state.user.name,
-            color: state.user.color,
-            cursor: state.user.cursor,
-            emoji: state.user.emoji,
-            emojiTime: state.user.emojiTime,
-            activeDrawElement: state.user.activeDrawElement,
-            isSimulated: false
-          };
-        }
-      });
+      const parseStates = (states) => {
+        states.forEach((state) => {
+          if (state.user && state.user.name !== myUsername.current) {
+            updatedCollabs[state.user.name] = {
+              name: state.user.name,
+              color: state.user.color,
+              cursor: state.user.cursor,
+              emoji: state.user.emoji,
+              emojiTime: state.user.emojiTime,
+              activeDrawElement: state.user.activeDrawElement,
+              isSimulated: false
+            };
+          }
+        });
+      };
+      
+      // Merge states from both networks
+      parseStates(states1);
+      parseStates(states2);
       
       setRealCollaborators(updatedCollabs);
-    });
+    };
+    
+    awareness1.on('change', handleAwarenessChange);
+    awareness2.on('change', handleAwarenessChange);
     
     return () => {
-      provider.disconnect();
+      provider1.disconnect();
+      provider2.disconnect();
       doc.destroy();
     };
   }, [setElements]);
@@ -148,55 +182,69 @@ export function useCollaboration(elements, setElements, pan, zoom) {
   };
   
   const sendCursorMove = (coords, currentElement = null) => {
-    if (!providerRef.current) return;
-    const awareness = providerRef.current.awareness;
-    const localState = awareness.getLocalState();
+    const updateAwareness = (providerRef) => {
+      if (!providerRef.current) return;
+      const awareness = providerRef.current.awareness;
+      const localState = awareness.getLocalState();
+      
+      if (localState && localState.user) {
+        awareness.setLocalStateField('user', {
+          ...localState.user,
+          cursor: coords,
+          activeDrawElement: currentElement
+        });
+      }
+    };
     
-    if (localState && localState.user) {
-      awareness.setLocalStateField('user', {
-        ...localState.user,
-        cursor: coords,
-        activeDrawElement: currentElement
-      });
-    }
+    updateAwareness(provider1Ref);
+    updateAwareness(provider2Ref);
   };
 
   const clearActiveDrawElement = () => {
-    if (!providerRef.current) return;
-    const awareness = providerRef.current.awareness;
-    const localState = awareness.getLocalState();
+    const clearAwareness = (providerRef) => {
+      if (!providerRef.current) return;
+      const awareness = providerRef.current.awareness;
+      const localState = awareness.getLocalState();
+      
+      if (localState && localState.user) {
+        awareness.setLocalStateField('user', {
+          ...localState.user,
+          activeDrawElement: null
+        });
+      }
+    };
     
-    if (localState && localState.user) {
-      awareness.setLocalStateField('user', {
-        ...localState.user,
-        activeDrawElement: null
-      });
-    }
+    clearAwareness(provider1Ref);
+    clearAwareness(provider2Ref);
   };
   
   const sendEmojiReaction = (emoji) => {
-    if (!providerRef.current) return;
-    const awareness = providerRef.current.awareness;
-    const localState = awareness.getLocalState();
-    
-    if (localState && localState.user) {
-      awareness.setLocalStateField('user', {
-        ...localState.user,
-        emoji: emoji,
-        emojiTime: Date.now()
-      });
+    const updateEmoji = (providerRef) => {
+      if (!providerRef.current) return;
+      const awareness = providerRef.current.awareness;
+      const localState = awareness.getLocalState();
       
-      // Clear reaction local presence state after 2 seconds
-      setTimeout(() => {
-        const currentState = awareness.getLocalState();
-        if (currentState && currentState.user && currentState.user.emoji === emoji) {
-          awareness.setLocalStateField('user', {
-            ...currentState.user,
-            emoji: null
-          });
-        }
-      }, 2000);
-    }
+      if (localState && localState.user) {
+        awareness.setLocalStateField('user', {
+          ...localState.user,
+          emoji: emoji,
+          emojiTime: Date.now()
+        });
+        
+        setTimeout(() => {
+          const currentState = awareness.getLocalState();
+          if (currentState && currentState.user && currentState.user.emoji === emoji) {
+            awareness.setLocalStateField('user', {
+              ...currentState.user,
+              emoji: null
+            });
+          }
+        }, 2000);
+      }
+    };
+    
+    updateEmoji(provider1Ref);
+    updateEmoji(provider2Ref);
   };
   
   return {

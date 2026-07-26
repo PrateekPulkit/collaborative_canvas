@@ -545,6 +545,7 @@ export default function DrawingCanvas() {
       };
       const nextElements = [...elements, newText];
       pushToHistory(nextElements); 
+      sendElementAdded(newText); // Broadcast shape registration to server immediately
       setEditingText(newText);
       setSelectedElementId(textId);
       setIsDrawing(false);
@@ -941,16 +942,23 @@ export default function DrawingCanvas() {
             const val = e.target.value;
             setEditingText(prev => ({ ...prev, text: val }));
             updateElement(editingText.id, { text: val });
+            sendElementUpdated(editingText.id, { text: val }); // Broadcast typing changes in real-time
           }}
           onBlur={() => {
-            if (!editingText.text.trim()) {
-              const nextElements = elements.filter(el => el.id !== editingText.id);
-              pushToHistory(nextElements);
+            const finalVal = editingText.text.trim();
+            if (!finalVal) {
+              setElements(prev => {
+                const next = prev.filter(el => el.id !== editingText.id);
+                pushToHistory(next);
+                return next;
+              });
               sendElementDeleted(editingText.id);
               setSelectedElementId(null);
             } else {
-              pushToHistory(elements);
-              sendBoardSync(elements);
+              setElements(prev => {
+                pushToHistory(prev);
+                return prev;
+              });
             }
             setEditingText(null);
           }}
